@@ -15,8 +15,6 @@ const (
 	// it is purely a performance tuning parameter, but required by github.com/google/btree
 	degreeBtreeScheduled = 3 // TODO(docmerlin): find the best number for this, its purely a perf optimization
 
-	// defaultMaxWorkers is a constant that sets the default number of maximum workers for a TreeScheduler
-	defaultMaxWorkers = 128
 )
 
 // TreeScheduler is a Scheduler based on a btree.

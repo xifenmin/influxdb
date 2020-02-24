@@ -8,6 +8,8 @@ import (
 	"github.com/cespare/xxhash"
 )
 
+const defaultMaxWorkers = 128 // defaultMaxWorkers is a constant that sets the default number of maximum workers for a TreeScheduler
+
 type shardSchedulerOptFunc func(t *ShardScheduler) error
 
 type ShardScheduler struct {
@@ -53,7 +55,7 @@ func (s *ShardScheduler) hash(taskID ID) uint64 {
 	return xxhash.Sum64(buf[:]) % uint64(len(s.schedulers)) // we just hash so that the number is uniformly distributed
 }
 
-func (s *ShardScheduler) Run(ctx context.Context) error {
+func (s *ShardScheduler) Process(ctx context.Context) {
 	s.wg.Add(len(s.schedulers))
 	for _, shard := range s.schedulers {
 		go func(shard Scheduler) {
@@ -62,7 +64,6 @@ func (s *ShardScheduler) Run(ctx context.Context) error {
 		}(shard)
 	}
 	s.wg.Wait()
-	return nil
 }
 
 func (s *ShardScheduler) State() SchedulerState {
