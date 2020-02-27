@@ -150,9 +150,15 @@ func (s *TreeScheduler) Process(ctx context.Context) {
 			return
 		case <-s.timer.C:
 			for s.process(ctx) {
-				// this for loop is a work around to the way clock's mock works
-				// when you reset duration 0 in a different thread than you are
-				// calling your clock.Set
+				// early exit
+				select {
+				case <-ctx.Done():
+					s.mu.Lock()
+					s.timer.Stop()
+					s.state = SchedulerStateStopped
+					s.mu.Unlock()
+					return
+				}
 			}
 		}
 	}
@@ -253,7 +259,6 @@ func (s *TreeScheduler) iterator(ctx context.Context, ts time.Time) (btree.ItemI
 		if err != nil {
 			s.onErr(ctx, it.id, it.Next(), err)
 		}
-		// TODO(docmerlin): we can increase performance by making the call to UpdateLastScheduled async
 		if err := s.checkpointer.UpdateLastScheduled(ctx, it.id, t); err != nil {
 			s.onErr(ctx, it.id, it.Next(), err)
 		}

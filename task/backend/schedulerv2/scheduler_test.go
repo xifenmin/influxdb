@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/influxdata/cron"
-
 	"github.com/benbjohnson/clock"
+
+	"github.com/influxdata/cron"
 )
 
 type mockExecutor struct {
@@ -58,649 +58,492 @@ func (m *mockSchedulableService) UpdateLastScheduled(ctx context.Context, id ID,
 	return nil
 }
 
-func TestSchedule_Next(t *testing.T) {
+func TestSchedule(t *testing.T) {
 	cases := []struct {
-		fn func(exe Executor, checkpointer SchedulableService, opts ...treeSchedulerOptFunc) (Scheduler, error)
+		name string
+		fn   func(exe Executor, checkpointer SchedulableService, opts ...treeSchedulerOptFunc) (Scheduler, error)
 	}{{
+		name: "TreeScheduler",
 		fn: func(exe Executor, checkpointer SchedulableService, opts ...treeSchedulerOptFunc) (Scheduler, error) {
 			sch, _, err := NewTreeScheduler(exe, checkpointer, opts...)
 			return sch, err
 		},
 	}, {
+		name: "ShardedTreeScheduler",
 		fn: func(exe Executor, checkpointer SchedulableService, opts ...treeSchedulerOptFunc) (Scheduler, error) {
-			sch, _, err := NewShardedTreeScheduler(20, exe, checkpointer, opts...)
+			sch, _, err := NewShardedTreeScheduler(16, exe, checkpointer, opts...)
 			return sch, err
 		},
 	},
 	}
 	for i := range cases {
-		mt := clock.NewMock()
-		testSchedule_Next(
-			t,
-			func(exe *mockExecutor) (Scheduler, error) {
-				return cases[i].fn(
-					exe,
-					&mockSchedulableService{},
-					WithTime(mt),
-				)
-			},
-			mt,
-		)
+		t.Run(cases[i].name, func(t *testing.T) {
+			testSchedule(
+				t,
+				func(exe *mockExecutor, opts ...treeSchedulerOptFunc) (Scheduler, error) {
+					return cases[i].fn(
+						exe,
+						&mockSchedulableService{},
+						opts...,
+					)
+				},
+			)
+		})
 	}
 }
 
-func testSchedule_Next(t *testing.T, newSch func(exe *mockExecutor) (Scheduler, error), mockTime *clock.Mock) {
+func testSchedule(t *testing.T, newSch func(exe *mockExecutor, opts ...treeSchedulerOptFunc) (Scheduler, error)) {
 	t.Helper()
-	t.Run("@every fires on appropriate boundaries", func(t *testing.T) {
-		cases := []struct {
-			cron     string
-			boundary time.Duration
-		}{
-			{
-				cron:     "@every 1m",
-				boundary: time.Minute,
-			}, {
-				cron:     "@every 1h",
-				boundary: time.Hour,
-			},
-		}
-
-		for i := range cases {
-			t.Run(cases[i].cron, func(t *testing.T) {
-				mockTime.Set(time.Now())
-				c := make(chan time.Time, 100)
-				exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledAt time.Time) {
-					select {
-					case <-ctx.Done():
-						t.Log("ctx done")
-					case c <- scheduledAt:
-					}
-				}}
-				sch, err := newSch(exe)
-				if err != nil {
-					t.Fatal(err)
-				}
-				ctx, cancel := context.WithCancel(context.Background())
-				go sch.Process(ctx)
-				defer cancel()
-
-				schedule, ts, err := NewSchedule(cases[i].cron, mockTime.Now().UTC())
-				if err != nil {
-					t.Fatal(err)
-				}
-
-				err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: ts})
-				if err != nil {
-					t.Fatal(err)
-				}
-
-				mockTime.Set(mockTime.Now().UTC().Add(17 * time.Minute))
-
-				after := time.After(6 * time.Second)
-				oldCheckC := ts
-				for i := 0; i < 16; i++ {
-					select {
-					case checkC := <-c:
-						if checkC.Sub(oldCheckC) != cases[i].boundary {
-							t.Fatalf("task didn't fire on correct interval fired on %s interval, expected on %s, with cron %s ", checkC.Sub(oldCheckC), cases[i].boundary, cases[i].cron)
-						}
-						if !checkC.Truncate(cases[i].boundary).Equal(checkC) {
-							t.Fatalf("task didn't fire at the correct time boundary")
-						}
-						oldCheckC = checkC
-					case <-after:
-						t.Fatalf("test timed out, only fired %d times but should have fired 16 times", i)
-					}
-				}
-			})
-		}
-
-	})
-	t.Run("fires properly with non-mocked time", func(t *testing.T) {
-	})
-	t.Run("doesn't fire when the task isn't ready", func(t *testing.T) {
-	})
+	//t.Run("@every fires on appropriate boundaries", func(t *testing.T) {
+	//	cases := []struct {
+	//		cron      string
+	//		boundary  time.Duration
+	//		skipAhead time.Duration
+	//	}{
+	//		{
+	//			cron:      "@every 1m",
+	//			boundary:  time.Minute,
+	//			skipAhead: 17 * time.Minute,
+	//		}, {
+	//			cron:      "@every 1h",
+	//			boundary:  time.Hour,
+	//			skipAhead: 17 * time.Hour,
+	//		},
+	//	}
+	//
+	//	for _, testCase := range cases {
+	//		t.Run(testCase.cron, func(t *testing.T) {
+	//			mockTime := clock.NewMock()
+	//			mockTime.Set(time.Now())
+	//
+	//			c := make(chan time.Time, 100)
+	//			exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledAt time.Time) {
+	//				select {
+	//				case <-ctx.Done():
+	//					t.Log("ctx done")
+	//				case c <- scheduledAt:
+	//				}
+	//			}}
+	//			sch, err := newSch(exe, WithTime(mockTime))
+	//			if err != nil {
+	//				t.Fatal(err)
+	//			}
+	//			ctx, cancel := context.WithCancel(context.Background())
+	//			wg := sync.WaitGroup{}
+	//			go func() {
+	//				wg.Add(1)
+	//				sch.Process(ctx)
+	//				wg.Done()
+	//			}()
+	//			defer func() {
+	//				cancel()
+	//				wg.Wait()
+	//			}()
+	//
+	//			schedule, ts, err := NewSchedule(testCase.cron, mockTime.Now().UTC())
+	//			if err != nil {
+	//				t.Fatal(err)
+	//			}
+	//
+	//			err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: ts})
+	//			if err != nil {
+	//				t.Fatal(err)
+	//			}
+	//
+	//			mockTime.Set(mockTime.Now().UTC().Add(testCase.skipAhead))
+	//
+	//			after := time.After(6 * time.Second)
+	//			oldCheckC := ts
+	//			for i := 0; i < 16; i++ {
+	//				select {
+	//				case checkC := <-c:
+	//					if checkC.Sub(oldCheckC) != testCase.boundary {
+	//						t.Fatalf("task didn't fire on correct interval fired on %s interval, expected on %s, with cron %s %s %s", checkC.Sub(oldCheckC), testCase.boundary, testCase.cron, checkC, oldCheckC)
+	//					}
+	//					if !checkC.Truncate(testCase.boundary).Equal(checkC) {
+	//						t.Fatalf("task didn't fire at the correct time boundary")
+	//					}
+	//					oldCheckC = checkC
+	//				case <-after:
+	//					t.Fatalf("test timed out, only fired %d times but should have fired 16 times", i)
+	//				}
+	//			}
+	//		})
+	//	}
+	//
+	//})
+	//t.Run("fires properly with non-mocked time", func(t *testing.T) {
+	//	theClock := clock.New()
+	//	c := make(chan time.Time, 100)
+	//	exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
+	//		select {
+	//		case <-ctx.Done():
+	//			t.Log("ctx done")
+	//		case c <- scheduledFor:
+	//		default:
+	//			t.Errorf("called the executor too many times")
+	//		}
+	//	}}
+	//	schedule, ts, err := NewSchedule("* * * * * * *", theClock.Now().UTC())
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	sch, err := newSch(exe, WithTime(theClock))
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: ts})
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	ctx, cancel := context.WithCancel(context.Background())
+	//	wg := sync.WaitGroup{}
+	//	go func() {
+	//		wg.Add(1)
+	//		sch.Process(ctx)
+	//		wg.Done()
+	//	}()
+	//	defer func() {
+	//		cancel()
+	//		wg.Wait()
+	//	}()
+	//
+	//	select {
+	//	case <-c:
+	//	case <-time.After(10 * time.Second):
+	//		t.Fatal("test timed out")
+	//	}
+	//})
+	//t.Run("doesn't fire when the task isn't ready", func(t *testing.T) {
+	//	mockTime := clock.NewMock()
+	//	mockTime.Set(time.Now())
+	//	c := make(chan time.Time, 100)
+	//	exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
+	//		select {
+	//		case <-ctx.Done():
+	//			t.Log("ctx done")
+	//		case c <- scheduledFor:
+	//		default:
+	//			t.Errorf("called the executor too many times")
+	//		}
+	//	}}
+	//	sch, err := newSch(exe, WithTime(mockTime))
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	ctx, cancel := context.WithCancel(context.Background())
+	//	wg := sync.WaitGroup{}
+	//	go func() {
+	//		wg.Add(1)
+	//		sch.Process(ctx)
+	//		wg.Done()
+	//	}()
+	//	defer func() {
+	//		cancel()
+	//		wg.Wait()
+	//	}()
+	//	schedule, _, err := NewSchedule("* * * * * * *", time.Time{})
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: mockTime.Now().UTC().Add(time.Second)})
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//	mockTime.Set(mockTime.Now().Add(2 * time.Second))
+	//
+	//	select {
+	//	case <-c:
+	//		t.Fatal("test timed out")
+	//	case <-time.After(2 * time.Second):
+	//	}
+	//})
 	t.Run("fires the correct number of times for the interval with a single schedulable", func(t *testing.T) {
-	})
-	t.Run("fires the correct number of times for the interval with multiple schedulables", func(t *testing.T) {
-	})
+		c := make(chan time.Time, 100)
+		exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
+			select {
+			case <-ctx.Done():
+				t.Log("ctx done")
+			case c <- scheduledFor:
+			}
+		}}
+		mockTime := clock.NewMock()
+		mockTime.Set(time.Now())
+		sch, err := newSch(exe, WithTime(mockTime))
+		if err != nil {
+			t.Fatal(err)
+		}
+		schedule, _, err := NewSchedule("* * * * * * *", time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
 
+		err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: mockTime.Now().UTC()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mockTime.Set(mockTime.Now().UTC().Add(17 * time.Second))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		wg := sync.WaitGroup{}
+		go func() {
+			wg.Add(1)
+			sch.Process(ctx)
+			wg.Done()
+		}()
+		defer func() {
+			cancel()
+			wg.Wait()
+		}()
+
+		after := time.After(6 * time.Second)
+		for i := 0; i < 16; i++ {
+			select {
+			case <-c:
+			case <-after:
+				t.Fatalf("test timed out, only fired %d times but should have fired 16 times", i)
+			}
+		}
+		mockTime.Set(mockTime.Now().UTC().Add(2 * time.Second))
+
+		after = time.After(6 * time.Second)
+
+		for i := 0; i < 2; i++ {
+			select {
+			case <-c:
+			case <-after:
+				t.Fatalf("test timed out, only fired %d times but should have fired 2 times", i)
+			}
+		}
+
+		select {
+		case <-c:
+			t.Fatalf("test scheduler fired too many times")
+		case <-time.After(2 * time.Second):
+		}
+	})
+	//t.Run("fires the correct number of times for the interval with multiple schedulables", func(t *testing.T) {
+	//	now := time.Date(2016, 0, 0, 0, 1, 1, 0, time.UTC)
+	//	c := make(chan struct {
+	//		ts time.Time
+	//		id ID
+	//	}, 100)
+	//	exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
+	//		select {
+	//		case <-ctx.Done():
+	//			t.Log("ctx done")
+	//		case c <- struct {
+	//			ts time.Time
+	//			id ID
+	//		}{
+	//			ts: scheduledFor,
+	//			id: id,
+	//		}:
+	//		}
+	//	}}
+	//	mockTime := clock.NewMock()
+	//	mockTime.Set(now)
+	//	sch, err := newSch(exe, WithTime(mockTime))
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	ctx, cancel := context.WithCancel(context.Background())
+	//	wg := sync.WaitGroup{}
+	//	go func() {
+	//		wg.Add(1)
+	//		sch.Process(ctx)
+	//		wg.Done()
+	//	}()
+	//	defer func() {
+	//		cancel()
+	//		wg.Wait()
+	//	}()
+	//
+	//	schedule, _, err := NewSchedule("* * * * * * *", time.Time{})
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: now})
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	schedule2, _, err := NewSchedule("*/2 * * * * * *", time.Time{})
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	err = sch.Schedule(mockSchedulable{id: 2, schedule: schedule2, offset: time.Second, lastScheduled: now})
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//	mockTime.Set(mockTime.Now().Add(17 * time.Second))
+	//
+	//	after := time.After(6 * time.Second)
+	//	for i := 0; i < 24; i++ {
+	//		select {
+	//		case <-c:
+	//		case <-after:
+	//			t.Fatalf("test timed out, only fired %d times but should have fired 24 times", i)
+	//		}
+	//	}
+	//
+	//	mockTime.Set(mockTime.Now().Add(2 * time.Second))
+	//
+	//	after = time.After(6 * time.Second)
+	//
+	//	for i := 0; i < 3; i++ {
+	//		select {
+	//		case <-c:
+	//		case <-after:
+	//			t.Fatalf("test timed out, only fired %d times but should have fired 3 times", i)
+	//		}
+	//	}
+	//
+	//	select {
+	//	case <-c:
+	//		t.Fatalf("test scheduler fired too many times")
+	//	case <-time.After(2 * time.Second):
+	//	}
+	//})
+	//t.Run("stops properly when processing context is cancled", func(t *testing.T) {
+	//	now := time.Now().Add(-20 * time.Second)
+	//	mockTime := clock.NewMock()
+	//	mockTime.Set(now)
+	//	exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {}}
+	//	ctx, cancel := context.WithCancel(context.Background())
+	//	sch, err := newSch(exe, WithTime(mockTime))
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//	wg := sync.WaitGroup{}
+	//	go func() {
+	//		wg.Add(1)
+	//		sch.Process(ctx)
+	//		wg.Done()
+	//	}()
+	//	cancel()
+	//})
+	//
+	//t.Run("panics in the executor are treated as errors", func(t *testing.T) {
+	//	// panics in the executor should be treated as errors
+	//	mockTime := clock.NewMock()
+	//	mockTime.Set(time.Now())
+	//	c := make(chan struct {
+	//		ts  time.Time
+	//		err error
+	//	}, 1000)
+	//
+	//	exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
+	//		panic("yikes oh no!")
+	//	}}
+	//
+	//	sch, err := newSch(exe, WithTime(mockTime), WithOnErrorFn(
+	//		func(ctx context.Context, taskID ID, scheduledFor time.Time, err error) {
+	//			c <- struct {
+	//				ts  time.Time
+	//				err error
+	//			}{
+	//				ts:  scheduledFor,
+	//				err: err,
+	//			}
+	//		}))
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//	ctx, cancel := context.WithCancel(context.Background())
+	//	wg := sync.WaitGroup{}
+	//	defer func() {
+	//		cancel()
+	//		wg.Wait()
+	//	}()
+	//	go func() {
+	//		wg.Add(1)
+	//		sch.Process(ctx)
+	//		wg.Done()
+	//	}()
+	//
+	//	schedule, ts, err := NewSchedule("* * * * * * *", time.Time{})
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: ts})
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	mockTime.Set(mockTime.Now().UTC().Add(6 * time.Second))
+	//	select {
+	//	case <-c: // panic was caught and error handler used
+	//
+	//	case <-time.After(4 * time.Second):
+	//		t.Fatal("test timed out")
+	//	}
+	//})
+	//t.Run("Release should remove items from being scheduled", func(t *testing.T) {
+	//	c := make(chan time.Time, 100)
+	//	exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
+	//		select {
+	//		case <-ctx.Done():
+	//			t.Log("ctx done")
+	//		case c <- scheduledFor:
+	//		}
+	//	}}
+	//	mockTime := clock.NewMock()
+	//	mockTime.Set(time.Now())
+	//	ctx, cancel := context.WithCancel(context.Background())
+	//	sch, err := newSch(exe, WithTime(mockTime))
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//	wg := sync.WaitGroup{}
+	//	defer func() {
+	//		cancel()
+	//		wg.Wait()
+	//	}()
+	//	go func() {
+	//		wg.Add(1)
+	//		sch.Process(ctx)
+	//		wg.Done()
+	//	}()
+	//
+	//	schedule, ts, err := NewSchedule("* * * * * * *", mockTime.Now().UTC())
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//
+	//	err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: ts.UTC()})
+	//	if err != nil {
+	//		t.Fatal(err)
+	//	}
+	//	mockTime.Set(mockTime.Now().UTC().Add(2 * time.Second))
+	//
+	//	select {
+	//	case <-c:
+	//	case <-time.After(6 * time.Second):
+	//		t.Fatalf("test timed out, it should have fired but didn't")
+	//	}
+	//	if err := sch.Release(1); err != nil {
+	//		t.Error(err)
+	//	}
+	//
+	//	mockTime.Set(mockTime.Now().UTC().Add(6 * time.Second))
+	//
+	//	select {
+	//	case <-c:
+	//		t.Fatal("expected test not to fire here, because task was released, but it did anyway")
+	//	case <-time.After(2 * time.Second):
+	//	}
+	//})
 }
-
-//func TestSchedule_Next(t *testing.T) {
-//	t.Run("@every fires on appropriate boundaries", func(t *testing.T) {
-//		t.Run("@every 1m", func(t *testing.T) {
-//			mockTime := clock.NewMock()
-//			mockTime.Set(time.Now())
-//			c := make(chan time.Time, 100)
-//			exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledAt time.Time) {
-//				select {
-//				case <-ctx.Done():
-//					t.Log("ctx done")
-//				case c <- scheduledAt:
-//				}
-//			}}
-//			sch, _, err := NewScheduler(
-//				exe,
-//				&mockSchedulableService{fn: func(ctx context.Context, id ID, t time.Time) error {
-//					return nil
-//				}},
-//				WithTime(mockTime),
-//				WithMaxConcurrentWorkers(20))
-//			if err != nil {
-//				t.Fatal(err)
-//			}
-//			defer sch.Stop()
-//			schedule, ts, err := NewSchedule("@every 1m", mockTime.Now().UTC())
-//			if err != nil {
-//				t.Fatal(err)
-//			}
-//
-//			err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: ts})
-//			if err != nil {
-//				t.Fatal(err)
-//			}
-//			go func() {
-//				sch.mu.Lock()
-//				mockTime.Set(mockTime.Now().UTC().Add(17 * time.Minute))
-//				sch.mu.Unlock()
-//			}()
-//
-//			after := time.After(6 * time.Second)
-//			oldCheckC := ts
-//			for i := 0; i < 16; i++ {
-//				select {
-//				case checkC := <-c:
-//					if checkC.Sub(oldCheckC) != time.Minute {
-//						t.Fatalf("task didn't fire on correct interval fired on %s interval", checkC.Sub(oldCheckC))
-//					}
-//					if !checkC.Truncate(time.Minute).Equal(checkC) {
-//						t.Fatalf("task didn't fire at the correct time boundary")
-//					}
-//					oldCheckC = checkC
-//				case <-after:
-//					t.Fatalf("test timed out, only fired %d times but should have fired 16 times", i)
-//				}
-//			}
-//		})
-//		t.Run("@every 1h", func(t *testing.T) {
-//			c := make(chan time.Time, 100)
-//			exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledAt time.Time) {
-//				select {
-//				case <-ctx.Done():
-//					t.Log("ctx done")
-//				case c <- scheduledAt:
-//				}
-//			}}
-//			mockTime := clock.NewMock()
-//			mockTime.Set(time.Now())
-//			sch, _, err := NewScheduler(
-//				exe,
-//				&mockSchedulableService{fn: func(ctx context.Context, id ID, t time.Time) error {
-//					return nil
-//				}},
-//				WithTime(mockTime),
-//				WithMaxConcurrentWorkers(20))
-//			if err != nil {
-//				t.Fatal(err)
-//			}
-//			defer sch.Stop()
-//			schedule, ts, err := NewSchedule("@every 1h", mockTime.Now().UTC())
-//			if err != nil {
-//				t.Fatal(err)
-//			}
-//
-//			err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: ts})
-//			if err != nil {
-//				t.Fatal(err)
-//			}
-//			go func() {
-//				sch.mu.Lock()
-//				mockTime.Set(mockTime.Now().UTC().Add(17 * time.Hour))
-//				sch.mu.Unlock()
-//			}()
-//
-//			after := time.After(6 * time.Second)
-//			oldCheckC := ts
-//			for i := 0; i < 16; i++ {
-//				select {
-//				case checkC := <-c:
-//					if checkC.Sub(oldCheckC) != time.Hour {
-//						t.Fatalf("task didn't fire on correct interval fired on %s interval", checkC.Sub(oldCheckC))
-//					}
-//					if !checkC.Truncate(time.Hour).Equal(checkC) {
-//						t.Fatalf("task didn't fire at the correct time boundary")
-//					}
-//					oldCheckC = checkC
-//				case <-after:
-//					t.Fatalf("test timed out, only fired %d times but should have fired 16 times", i)
-//				}
-//			}
-//		})
-//	})
-//	t.Run("fires properly with non-mocked time", func(t *testing.T) {
-//		now := time.Now()
-//		c := make(chan time.Time, 100)
-//		exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
-//			select {
-//			case <-ctx.Done():
-//				t.Log("ctx done")
-//			case c <- scheduledFor:
-//			default:
-//				t.Errorf("called the executor too many times")
-//			}
-//		}}
-//		sch, _, err := NewScheduler(
-//			exe,
-//			&mockSchedulableService{fn: func(ctx context.Context, id ID, t time.Time) error {
-//				return nil
-//			}},
-//			WithMaxConcurrentWorkers(2))
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//		defer sch.Stop()
-//		schedule, _, err := NewSchedule("* * * * * * *", time.Time{})
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//
-//		err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: now.Add(-20 * time.Second)})
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//
-//		select {
-//		case <-c:
-//		case <-time.After(10 * time.Second):
-//			t.Fatal("test timed out")
-//		}
-//	})
-//	t.Run("doesn't fire when the task isn't ready", func(t *testing.T) {
-//		mockTime := clock.NewMock()
-//		mockTime.Set(time.Now())
-//		c := make(chan time.Time, 100)
-//		exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
-//			select {
-//			case <-ctx.Done():
-//				t.Log("ctx done")
-//			case c <- scheduledFor:
-//			default:
-//				t.Errorf("called the executor too many times")
-//			}
-//		}}
-//		sch, _, err := NewScheduler(
-//			exe,
-//			&mockSchedulableService{fn: func(ctx context.Context, id ID, t time.Time) error {
-//				return nil
-//			}},
-//			WithTime(mockTime),
-//			WithMaxConcurrentWorkers(2))
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//		defer sch.Stop()
-//		schedule, _, err := NewSchedule("* * * * * * *", time.Time{})
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//
-//		err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: mockTime.Now().UTC().Add(time.Second)})
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//		go func() {
-//			sch.mu.Lock()
-//			mockTime.Set(mockTime.Now().Add(2 * time.Second))
-//			sch.mu.Unlock()
-//		}()
-//
-//		select {
-//		case <-c:
-//			t.Fatal("test timed out")
-//		case <-time.After(2 * time.Second):
-//		}
-//
-//	})
-//
-//	t.Run("fires the correct number of times for the interval with a single schedulable", func(t *testing.T) {
-//		c := make(chan time.Time, 100)
-//		exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
-//			select {
-//			case <-ctx.Done():
-//				t.Log("ctx done")
-//			case c <- scheduledFor:
-//			}
-//		}}
-//		mockTime := clock.NewMock()
-//		mockTime.Set(time.Now())
-//		sch, _, err := NewScheduler(
-//			exe,
-//			&mockSchedulableService{fn: func(ctx context.Context, id ID, t time.Time) error {
-//				return nil
-//			}},
-//			WithTime(mockTime),
-//			WithMaxConcurrentWorkers(20))
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//		defer sch.Stop()
-//		schedule, _, err := NewSchedule("* * * * * * *", time.Time{})
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//
-//		err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: mockTime.Now().UTC()})
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//		go func() {
-//			sch.mu.Lock()
-//			mockTime.Set(mockTime.Now().UTC().Add(17 * time.Second))
-//			sch.mu.Unlock()
-//		}()
-//
-//		after := time.After(6 * time.Second)
-//		for i := 0; i < 16; i++ {
-//			select {
-//			case <-c:
-//			case <-after:
-//				t.Fatalf("test timed out, only fired %d times but should have fired 16 times", i)
-//			}
-//		}
-//		go func() {
-//			sch.mu.Lock()
-//			mockTime.Set(mockTime.Now().UTC().Add(2 * time.Second))
-//			sch.mu.Unlock()
-//		}()
-//
-//		after = time.After(6 * time.Second)
-//
-//		for i := 0; i < 2; i++ {
-//			select {
-//			case <-c:
-//			case <-after:
-//				t.Fatalf("test timed out, only fired %d times but should have fired 2 times", i)
-//			}
-//		}
-//
-//		select {
-//		case <-c:
-//			t.Fatalf("test scheduler fired too many times")
-//		case <-time.After(2 * time.Second):
-//		}
-//	})
-//
-//	t.Run("fires the correct number of times for the interval with multiple schedulables", func(t *testing.T) {
-//		now := time.Date(2016, 0, 0, 0, 1, 1, 0, time.UTC)
-//		c := make(chan struct {
-//			ts time.Time
-//			id ID
-//		}, 100)
-//		exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
-//			select {
-//			case <-ctx.Done():
-//				t.Log("ctx done")
-//			case c <- struct {
-//				ts time.Time
-//				id ID
-//			}{
-//				ts: scheduledFor,
-//				id: id,
-//			}:
-//			}
-//		}}
-//		mockTime := clock.NewMock()
-//		mockTime.Set(now)
-//		sch, _, err := NewScheduler(
-//			exe,
-//			&mockSchedulableService{fn: func(ctx context.Context, id ID, t time.Time) error {
-//				return nil
-//			}},
-//			WithTime(mockTime),
-//			WithMaxConcurrentWorkers(20))
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//		defer sch.Stop()
-//		schedule, _, err := NewSchedule("* * * * * * *", time.Time{})
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//
-//		err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: now})
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//
-//		schedule2, _, err := NewSchedule("*/2 * * * * * *", time.Time{})
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//
-//		err = sch.Schedule(mockSchedulable{id: 2, schedule: schedule2, offset: time.Second, lastScheduled: now})
-//		if err != nil {
-//			t.Fatal(err)
-//		}
-//		go func() {
-//			sch.mu.Lock()
-//			mockTime.Set(mockTime.Now().Add(17 * time.Second))
-//			sch.mu.Unlock()
-//		}()
-//
-//		after := time.After(6 * time.Second)
-//		for i := 0; i < 24; i++ {
-//			select {
-//			case <-c:
-//			case <-after:
-//				t.Fatalf("test timed out, only fired %d times but should have fired 24 times", i)
-//			}
-//		}
-//
-//		go func() {
-//			sch.mu.Lock()
-//			mockTime.Set(mockTime.Now().Add(2 * time.Second))
-//			sch.mu.Unlock()
-//		}()
-//
-//		after = time.After(6 * time.Second)
-//
-//		for i := 0; i < 3; i++ {
-//			select {
-//			case <-c:
-//			case <-after:
-//				t.Fatalf("test timed out, only fired %d times but should have fired 3 times", i)
-//			}
-//		}
-//
-//		select {
-//		case <-c:
-//			t.Fatalf("test scheduler fired too many times")
-//		case <-time.After(2 * time.Second):
-//		}
-//	})
-//}
-//
-//func TestTreeScheduler_Stop(t *testing.T) {
-//	now := time.Now().Add(-20 * time.Second)
-//	mockTime := clock.NewMock()
-//	mockTime.Set(now)
-//	exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {}}
-//	sch, _, err := NewScheduler(exe, &mockSchedulableService{fn: func(ctx context.Context, id ID, t time.Time) error {
-//		return nil
-//	}},
-//		WithTime(mockTime))
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	sch.Stop()
-//}
-//
-//func TestSchedule_panic(t *testing.T) {
-//	// panics in the executor should be treated as errors
-//	now := time.Now().UTC()
-//	c := make(chan struct {
-//		ts  time.Time
-//		err error
-//	}, 1)
-//
-//	exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
-//		panic("yikes oh no!")
-//	}}
-//
-//	sch, _, err := NewScheduler(
-//		exe,
-//		&mockSchedulableService{fn: func(ctx context.Context, id ID, t time.Time) error {
-//			return nil
-//		}},
-//		WithMaxConcurrentWorkers(1), // to make debugging easier
-//		WithOnErrorFn(func(_ context.Context, _ ID, ts time.Time, err error) {
-//			c <- struct {
-//				ts  time.Time
-//				err error
-//			}{
-//				ts:  ts,
-//				err: err,
-//			}
-//		}))
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//
-//	schedule, _, err := NewSchedule("* * * * * * *", time.Time{})
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//
-//	err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: now.Add(-20 * time.Second)})
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//
-//	select {
-//	case <-c: // panic was caught and error handler used
-//	case <-time.After(10 * time.Second):
-//		t.Fatal("test timed out", now.UTC().Unix())
-//	}
-//}
-//
-//func TestTreeScheduler_LongPanicTest(t *testing.T) {
-//	// This test is to catch one specifgic type of race condition that can occur and isn't caught by race test, but causes a panic
-//	// in the google btree library
-//	now := time.Date(2096, time.December, 30, 0, 0, 0, 0, time.UTC)
-//
-//	mockTime := clock.NewMock()
-//	mockTime.Set(now)
-//
-//	exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
-//		select {
-//		case <-ctx.Done():
-//			t.Log("ctx done")
-//		default:
-//		}
-//	}}
-//
-//	sch, _, err := NewScheduler(
-//		exe,
-//		&mockSchedulableService{fn: func(ctx context.Context, id ID, t time.Time) error {
-//			return nil
-//		}},
-//		WithTime(mockTime),
-//		WithMaxConcurrentWorkers(20))
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	defer sch.Stop()
-//
-//	// this tests for a race condition in the btree that isn't normally caught by the race detector
-//	schedule, ts, err := NewSchedule("* * * * * * *", now.Add(-1*time.Second))
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	badSchedule, ts, err := NewSchedule("0 0 1 12 *", now.Add(-1*time.Second))
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//
-//	for i := ID(1); i <= 2000; i++ { // since a valid ID probably shouldn't be zero
-//		if i%100 == 0 {
-//			err = sch.Schedule(mockSchedulable{id: i, schedule: badSchedule, offset: 0, lastScheduled: ts})
-//			if err != nil {
-//				t.Fatal(err)
-//			}
-//		} else {
-//			err = sch.Schedule(mockSchedulable{id: i, schedule: schedule, offset: 0, lastScheduled: ts})
-//			if err != nil {
-//				t.Fatal(err)
-//			}
-//		}
-//	}
-//	time.Sleep(2 * time.Second)
-//	sch.mu.Lock()
-//	mockTime.Set(mockTime.Now().UTC().Add(99 * time.Second))
-//	sch.mu.Unlock()
-//	time.Sleep(5 * time.Second)
-//
-//}
-//
-//func TestTreeScheduler_Release(t *testing.T) {
-//	c := make(chan time.Time, 100)
-//	exe := &mockExecutor{fn: func(l *sync.Mutex, ctx context.Context, id ID, scheduledFor time.Time) {
-//		select {
-//		case <-ctx.Done():
-//			t.Log("ctx done")
-//		case c <- scheduledFor:
-//		}
-//	}}
-//	mockTime := clock.NewMock()
-//	mockTime.Set(time.Now())
-//	sch, _, err := NewScheduler(
-//		exe,
-//		&mockSchedulableService{fn: func(ctx context.Context, id ID, t time.Time) error {
-//			return nil
-//		}},
-//		WithTime(mockTime),
-//		WithMaxConcurrentWorkers(20))
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	defer sch.Stop()
-//	schedule, ts, err := NewSchedule("* * * * * * *", mockTime.Now().UTC())
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//
-//	err = sch.Schedule(mockSchedulable{id: 1, schedule: schedule, offset: time.Second, lastScheduled: ts.UTC()})
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	go func() {
-//		sch.mu.Lock()
-//		mockTime.Set(mockTime.Now().UTC().Add(2 * time.Second))
-//		sch.mu.Unlock()
-//	}()
-//
-//	select {
-//	case <-c:
-//	case <-time.After(6 * time.Second):
-//		t.Fatalf("test timed out, it should have fired but didn't")
-//	}
-//	if err := sch.Release(1); err != nil {
-//		t.Error(err)
-//	}
-//
-//	go func() {
-//		sch.mu.Lock()
-//		mockTime.Set(mockTime.Now().UTC().Add(6 * time.Second))
-//		sch.mu.Unlock()
-//	}()
-//
-//	select {
-//	case <-c:
-//		t.Fatal("expected test not to fire here, because task was released, but it did anyway")
-//	case <-time.After(2 * time.Second):
-//	}
-//}
 
 func mustCron(s string) Schedule {
 	cr, err := cron.ParseUTC(s)
