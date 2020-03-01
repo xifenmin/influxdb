@@ -101,7 +101,6 @@ func (c *floatMultiShardArrayCursor) reset(cur cursors.FloatArrayCursor, itr cur
 	c.FloatArrayCursor = cur
 	c.itr = itr
 	c.err = nil
-	c.count = 0
 }
 
 func (c *floatMultiShardArrayCursor) Err() error { return c.err }
@@ -111,18 +110,7 @@ func (c *floatMultiShardArrayCursor) Stats() cursors.CursorStats {
 }
 
 func (c *floatMultiShardArrayCursor) Next() *cursors.FloatArray {
-	for {
-		a := c.FloatArrayCursor.Next()
-		c.count += int64(a.Len())
-		if c.count > c.limit {
-			diff := c.count - c.limit
-			c.count -= diff
-			rem := int64(a.Len()) - diff
-			a.Timestamps = a.Timestamps[:rem]
-			a.Values = a.Values[:rem]
-		}
-		return a
-	}
+	return c.FloatArrayCursor.Next()
 }
 
 type floatArraySumCursor struct {
@@ -288,7 +276,6 @@ func (c *integerMultiShardArrayCursor) reset(cur cursors.IntegerArrayCursor, itr
 	c.IntegerArrayCursor = cur
 	c.itr = itr
 	c.err = nil
-	c.count = 0
 }
 
 func (c *integerMultiShardArrayCursor) Err() error { return c.err }
@@ -298,18 +285,7 @@ func (c *integerMultiShardArrayCursor) Stats() cursors.CursorStats {
 }
 
 func (c *integerMultiShardArrayCursor) Next() *cursors.IntegerArray {
-	for {
-		a := c.IntegerArrayCursor.Next()
-		c.count += int64(a.Len())
-		if c.count > c.limit {
-			diff := c.count - c.limit
-			c.count -= diff
-			rem := int64(a.Len()) - diff
-			a.Timestamps = a.Timestamps[:rem]
-			a.Values = a.Values[:rem]
-		}
-		return a
-	}
+	return c.IntegerArrayCursor.Next()
 }
 
 type integerArraySumCursor struct {
@@ -475,7 +451,6 @@ func (c *unsignedMultiShardArrayCursor) reset(cur cursors.UnsignedArrayCursor, i
 	c.UnsignedArrayCursor = cur
 	c.itr = itr
 	c.err = nil
-	c.count = 0
 }
 
 func (c *unsignedMultiShardArrayCursor) Err() error { return c.err }
@@ -485,18 +460,7 @@ func (c *unsignedMultiShardArrayCursor) Stats() cursors.CursorStats {
 }
 
 func (c *unsignedMultiShardArrayCursor) Next() *cursors.UnsignedArray {
-	for {
-		a := c.UnsignedArrayCursor.Next()
-		c.count += int64(a.Len())
-		if c.count > c.limit {
-			diff := c.count - c.limit
-			c.count -= diff
-			rem := int64(a.Len()) - diff
-			a.Timestamps = a.Timestamps[:rem]
-			a.Values = a.Values[:rem]
-		}
-		return a
-	}
+	return c.UnsignedArrayCursor.Next()
 }
 
 type unsignedArraySumCursor struct {
@@ -662,7 +626,6 @@ func (c *stringMultiShardArrayCursor) reset(cur cursors.StringArrayCursor, itr c
 	c.StringArrayCursor = cur
 	c.itr = itr
 	c.err = nil
-	c.count = 0
 }
 
 func (c *stringMultiShardArrayCursor) Err() error { return c.err }
@@ -672,18 +635,7 @@ func (c *stringMultiShardArrayCursor) Stats() cursors.CursorStats {
 }
 
 func (c *stringMultiShardArrayCursor) Next() *cursors.StringArray {
-	for {
-		a := c.StringArrayCursor.Next()
-		c.count += int64(a.Len())
-		if c.count > c.limit {
-			diff := c.count - c.limit
-			c.count -= diff
-			rem := int64(a.Len()) - diff
-			a.Timestamps = a.Timestamps[:rem]
-			a.Values = a.Values[:rem]
-		}
-		return a
-	}
+	return c.StringArrayCursor.Next()
 }
 
 type integerStringCountArrayCursor struct {
@@ -809,7 +761,6 @@ func (c *booleanMultiShardArrayCursor) reset(cur cursors.BooleanArrayCursor, itr
 	c.BooleanArrayCursor = cur
 	c.itr = itr
 	c.err = nil
-	c.count = 0
 }
 
 func (c *booleanMultiShardArrayCursor) Err() error { return c.err }
@@ -819,18 +770,7 @@ func (c *booleanMultiShardArrayCursor) Stats() cursors.CursorStats {
 }
 
 func (c *booleanMultiShardArrayCursor) Next() *cursors.BooleanArray {
-	for {
-		a := c.BooleanArrayCursor.Next()
-		c.count += int64(a.Len())
-		if c.count > c.limit {
-			diff := c.count - c.limit
-			c.count -= diff
-			rem := int64(a.Len()) - diff
-			a.Timestamps = a.Timestamps[:rem]
-			a.Values = a.Values[:rem]
-		}
-		return a
-	}
+	return c.BooleanArrayCursor.Next()
 }
 
 type integerBooleanCountArrayCursor struct {
