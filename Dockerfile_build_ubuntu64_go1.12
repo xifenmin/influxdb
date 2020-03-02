@@ -1,4 +1,4 @@
-FROM ioft/i386-ubuntu:xenial
+FROM ubuntu:xenial
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     python-software-properties \
@@ -9,20 +9,22 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     make \
     ruby \
     ruby-dev \
-    rubygems \
     autoconf \
     libtool \
     build-essential \
     rpm \
     zip \
     python \
-    python-boto
+    python-boto \
+    asciidoc \
+    xmlto \
+    docbook-xsl
 
 RUN gem install fpm
 
 # setup environment
-ENV GO_VERSION  1.13.8
-ENV GOARCH      386
+ENV GO_VERSION  1.12
+ENV GOARCH      amd64
 ENV GOROOT      /usr/local/go
 ENV GOPATH      /root/go
 ENV PATH        $GOPATH/bin:$GOROOT/bin:$PATH
@@ -34,6 +36,6 @@ RUN wget --no-verbose https://storage.googleapis.com/golang/go${GO_VERSION}.linu
 RUN mkdir -p $PROJECT_DIR
 
 WORKDIR $PROJECT_DIR
-VOLUME $PROJECT_DIR
+VOLUME  $PROJECT_DIR
 
 ENTRYPOINT [ "/root/influxdb/build.py" ]
