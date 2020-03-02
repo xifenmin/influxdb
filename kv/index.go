@@ -141,32 +141,12 @@ func NewIndex(mapping IndexMapping, opts ...IndexOption) *Index {
 	return index
 }
 
-// IndexPopulatorStore is a store which also has a AutoPopulateIndex method
-// The method returns true when the store support auto population of index
-// on initialize.
-type IndexPopulatorStore interface {
-	Store
-	AutoPopulateIndex() bool
-}
-
-// Initialize creates the index bucket on the provided store
-// Given the store implements IndexPopulatorStore interface and
-// calling AutoPopulateIndex returns true, then this auto-populates
-// the index.
-func (i *Index) Initialize(ctx context.Context, store Store) error {
-	if err := store.Update(ctx, func(tx Tx) error {
-		_, err := i.indexBucket(tx)
+func (i *Index) initialize(ctx context.Context, store Store) error {
+	return store.Update(ctx, func(tx Tx) error {
+		// create bucket if not exist
+		_, err := tx.Bucket(i.IndexBucket())
 		return err
-	}); err != nil {
-		return err
-	}
-
-	if store, ok := store.(IndexPopulatorStore); ok && store.AutoPopulateIndex() {
-		_, err := i.Populate(ctx, store)
-		return err
-	}
-
-	return nil
+	})
 }
 
 func (i *Index) indexBucket(tx Tx) (Bucket, error) {
@@ -197,6 +177,41 @@ func indexKeyParts(indexKey []byte) (fk, pk []byte, err error) {
 	fk, pk = parts[0], parts[1]
 
 	return
+}
+
+// IndexMigration is a migration for adding and removing an index.
+// These are constructed via the Index.Migration function.
+type IndexMigration struct {
+	*Index
+	opts []PopulateOption
+}
+
+// Name returns a readable name for the index migration.
+func (i *IndexMigration) Name() string {
+	return fmt.Sprintf("add index %q", string(i.IndexBucket()))
+}
+
+// Up initializes the index bucket and populates the index.
+func (i *IndexMigration) Up(ctx context.Context, store Store) error {
+	if err := i.initialize(ctx, store); err != nil {
+		return err
+	}
+
+	_, err := i.Populate(ctx, store, i.opts...)
+	return err
+}
+
+// Down deletes all entries from the index.
+func (i *IndexMigration) Down(ctx context.Context, store Store) error {
+	return i.DeleteAll(ctx, store)
+}
+
+// Migration creates an IndexMigration for the underlying Index.
+func (i *Index) Migration(opts ...PopulateOption) *IndexMigration {
+	return &IndexMigration{
+		Index: i,
+		opts:  opts,
+	}
 }
 
 // Insert creates a single index entry for the provided primary key on the foreign key.
@@ -247,14 +262,34 @@ func (i *Index) Walk(tx Tx, foreignKey []byte, visitFn VisitFunc) error {
 	return indexWalk(cursor, sourceBucket, visitFn)
 }
 
+// PopulateConfig configures a call to Populate
+type PopulateConfig struct {
+	RemoveDanglingForeignKeys bool
+}
+
+// PopulateOption is a functional option for the Populate call
+type PopulateOption func(*PopulateConfig)
+
+// WithPopulateRemoveDanglingForeignKeys removes index entries which point to
+// missing items in the source bucket.
+func WithPopulateRemoveDanglingForeignKeys(c *PopulateConfig) {
+	c.RemoveDanglingForeignKeys = true
+}
+
 // Populate does a full population of the index using the IndexSourceOn IndexMapping function.
 // Once completed it marks the index as ready for use.
 // It return a nil error on success and the count of inserted items.
-func (i *Index) Populate(ctx context.Context, store Store) (n int, err error) {
+func (i *Index) Populate(ctx context.Context, store Store, opts ...PopulateOption) (n int, err error) {
+	var config PopulateConfig
+
+	for _, opt := range opts {
+		opt(&config)
+	}
+
 	// verify the index to derive missing index
 	// we can skip missing source lookup as we're
 	// only interested in populating the missing index
-	diff, err := i.verify(ctx, store, false)
+	diff, err := i.verify(ctx, store, config.RemoveDanglingForeignKeys)
 	if err != nil {
 		return 0, fmt.Errorf("looking up missing indexes: %w", err)
 	}
@@ -302,7 +337,84 @@ func (i *Index) Populate(ctx context.Context, store Store) (n int, err error) {
 			}
 		}
 	}
-	return n, flush(batch)
+
+	if err := flush(batch); err != nil {
+		return n, err
+	}
+
+	if config.RemoveDanglingForeignKeys {
+		return n, i.remove(ctx, store, diff.MissingFromSource)
+	}
+
+	return n, nil
+}
+
+// DeleteAll removes the entire index in batches
+func (i *Index) DeleteAll(ctx context.Context, store Store) error {
+	diff, err := i.verify(ctx, store, true)
+	if err != nil {
+		return err
+	}
+
+	for k, v := range diff.MissingFromSource {
+		if fkm, ok := diff.PresentInIndex[k]; ok {
+			for pk, _ := range v {
+				fkm[pk] = struct{}{}
+			}
+			continue
+		}
+
+		diff.PresentInIndex[k] = v
+	}
+
+	return i.remove(ctx, store, diff.PresentInIndex)
+}
+
+func (i *Index) remove(ctx context.Context, store Store, mappings map[string]map[string]struct{}) error {
+	var (
+		batch [][]byte
+		flush = func(batch [][]byte) error {
+			if len(batch) == 0 {
+				return nil
+			}
+
+			if err := store.Update(ctx, func(tx Tx) error {
+				indexBucket, err := i.indexBucket(tx)
+				if err != nil {
+					return err
+				}
+
+				for _, indexKey := range batch {
+					// delete dangling foreign key
+					if err := indexBucket.Delete(indexKey); err != nil {
+						return err
+					}
+				}
+
+				return nil
+			}); err != nil {
+				return fmt.Errorf("removing dangling foreign keys: %w", err)
+			}
+
+			return nil
+		}
+	)
+
+	for fk, fkm := range mappings {
+		for pk := range fkm {
+			batch = append(batch, indexKey([]byte(fk), []byte(pk)))
+
+			if len(batch) >= i.populateBatchSize {
+				if err := flush(batch); err != nil {
+					return err
+				}
+
+				batch = batch[:0]
+			}
+		}
+	}
+
+	return flush(batch)
 }
 
 // IndexDiff contains a set of items present in the source not in index,
