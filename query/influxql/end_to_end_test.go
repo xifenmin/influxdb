@@ -88,7 +88,7 @@ var skipTests = map[string]string{
 	//"series_agg_1":             "Transpiler: Implement stddev https://github.com/influxdata/influxdb/issues/10735",
 	//"series_agg_2":             "Transpiler: Implement spread https://github.com/influxdata/influxdb/issues/10734",
 	"series_agg_3":             "Transpiler: Implement elapsed https://github.com/influxdata/influxdb/issues/10733",
-	"series_agg_4":             "Transpiler: Implement cumulative_sum https://github.com/influxdata/influxdb/issues/10732",
+	//"series_agg_4":             "Transpiler: Implement cumulative_sum https://github.com/influxdata/influxdb/issues/10732",
 	"series_agg_5":             "add derivative support to the transpiler https://github.com/influxdata/influxdb/issues/10759",
 	"series_agg_6":             "Transpiler: Implement non_negative_derivative https://github.com/influxdata/influxdb/issues/10731",
 	"series_agg_7":             "Transpiler should remove _start column  https://github.com/influxdata/influxdb/issues/10742",
