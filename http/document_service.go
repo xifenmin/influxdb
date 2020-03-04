@@ -9,7 +9,7 @@ import (
 
 	"github.com/influxdata/httprouter"
 	"github.com/influxdata/influxdb"
-	pcontext "github.com/influxdata/influxdb/context"
+	"github.com/influxdata/influxdb/authorizer"
 	"github.com/influxdata/influxdb/kit/tracing"
 	"github.com/influxdata/influxdb/pkg/httpc"
 	"go.uber.org/zap"
@@ -93,6 +93,25 @@ func NewDocumentHandler(b *DocumentBackend) *DocumentHandler {
 	return h
 }
 
+func validateOrgParams(org string, orgID *influxdb.ID) error {
+	if org != "" && orgID != nil {
+		return &influxdb.Error{
+			Code: influxdb.EInvalid,
+			Msg:  "Please provide either org or orgID, not both",
+		}
+	}
+	if orgID != nil && orgID.Valid() {
+		return nil
+	}
+	if org != "" {
+		return nil
+	}
+	return &influxdb.Error{
+		Code: influxdb.EInvalid,
+		Msg:  "Please provide either org or orgID",
+	}
+}
+
 type documentResponse struct {
 	Links map[string]string `json:"links"`
 	*influxdb.Document
@@ -139,17 +158,15 @@ func (h *DocumentHandler) handlePostDocument(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	a, err := pcontext.GetAuthorizer(ctx)
-	if err != nil {
+	var opts []influxdb.DocumentOptions
+	if err := validateOrgParams(req.Org, &req.OrgID); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
-
-	opts := []influxdb.DocumentOptions{}
 	if req.OrgID.Valid() {
-		opts = append(opts, influxdb.AuthorizedWithOrgID(a, req.OrgID))
+		opts = append(opts, authorizer.CreateDocumentAuthorizerOptionOrgID(ctx, req.OrgID))
 	} else {
-		opts = append(opts, influxdb.AuthorizedWithOrg(a, req.Org))
+		opts = append(opts, authorizer.CreateDocumentAuthorizerOptionOrg(ctx, req.Org))
 	}
 	for _, label := range req.Labels {
 		// TODO(desa): make these AuthorizedWithLabel eventually
@@ -221,25 +238,15 @@ func (h *DocumentHandler) handleGetDocuments(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	a, err := pcontext.GetAuthorizer(ctx)
-	if err != nil {
+	opts := []influxdb.DocumentFindOptions{influxdb.IncludeLabels}
+	if err := validateOrgParams(req.Org, req.OrgID); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
-
-	opts := []influxdb.DocumentFindOptions{influxdb.IncludeLabels}
-	if req.Org != "" && req.OrgID != nil {
-		h.HandleHTTPError(ctx, &influxdb.Error{
-			Code: influxdb.EInvalid,
-			Msg:  "Please provide either org or orgID, not both",
-		}, w)
-		return
-	} else if req.OrgID != nil && req.OrgID.Valid() {
-		opt := influxdb.AuthorizedWhereOrgID(a, *req.OrgID)
-		opts = append(opts, opt)
-	} else if req.Org != "" {
-		opt := influxdb.AuthorizedWhereOrg(a, req.Org)
-		opts = append(opts, opt)
+	if req.OrgID.Valid() {
+		opts = append(opts, authorizer.GetDocumentsAuthorizerOptionOrgID(ctx, *req.OrgID))
+	} else {
+		opts = append(opts, authorizer.GetDocumentsAuthorizerOptionOrg(ctx, req.Org))
 	}
 
 	ds, err := s.FindDocuments(ctx, opts...)
@@ -290,6 +297,8 @@ func decodeGetDocumentsRequest(ctx context.Context, r *http.Request) (*getDocume
 		OrgID:     oid,
 	}, nil
 }
+
+// NOTE: For label authorization we rely on LabelService being wrapped with authorizer.NewLabelService().
 
 func (h *DocumentHandler) handlePostDocumentLabel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -390,11 +399,12 @@ func (h *DocumentHandler) getDocument(w http.ResponseWriter, r *http.Request) (*
 	if err != nil {
 		return nil, "", err
 	}
-	a, err := pcontext.GetAuthorizer(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-	ds, err := s.FindDocuments(ctx, influxdb.AuthorizedWhereID(a, req.ID), influxdb.IncludeContent, influxdb.IncludeLabels)
+	ds, err := s.FindDocuments(
+		ctx,
+		authorizer.GetDocumentAuthorizerOption(ctx, req.ID),
+		influxdb.IncludeContent,
+		influxdb.IncludeLabels,
+	)
 	if err != nil {
 		return nil, "", err
 	}
@@ -477,13 +487,7 @@ func (h *DocumentHandler) handleDeleteDocument(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	a, err := pcontext.GetAuthorizer(ctx)
-	if err != nil {
-		h.HandleHTTPError(ctx, err, w)
-		return
-	}
-
-	if err := s.DeleteDocuments(ctx, influxdb.AuthorizedWhereID(a, req.ID)); err != nil {
+	if err := s.DeleteDocuments(ctx, authorizer.DeleteDocumentAuthorizerOption(ctx, req.ID)); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
@@ -545,13 +549,7 @@ func (h *DocumentHandler) handlePutDocument(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	a, err := pcontext.GetAuthorizer(ctx)
-	if err != nil {
-		h.HandleHTTPError(ctx, err, w)
-		return
-	}
-
-	if err := s.UpdateDocument(ctx, req.Document, influxdb.Authorized(a)); err != nil {
+	if err := s.UpdateDocument(ctx, req.Document, authorizer.UpdateDocumentAuthorizerOption(ctx, req.ID)); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}

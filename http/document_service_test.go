@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/influxdata/influxdb"
+	"github.com/influxdata/influxdb/authorizer"
 	icontext "github.com/influxdata/influxdb/context"
 	httpmock "github.com/influxdata/influxdb/http/mock"
 	"github.com/influxdata/influxdb/inmem"
@@ -52,7 +53,7 @@ func setup(t *testing.T) (func(auth influxdb.Authorizer) *httptest.Server, func(
 	}
 	if err := ds.CreateDocument(ctx, doc,
 		// make the org owner of the document
-		influxdb.AuthorizedWithOrgID(mock.Authorization{}, org.ID),
+		authorizer.CreateDocumentAuthorizerOptionOrgID(ctx, org.ID),
 		influxdb.WithLabel(l1.ID),
 		influxdb.WithLabel(l3.ID)); err != nil {
 		panic(err)
@@ -62,7 +63,7 @@ func setup(t *testing.T) (func(auth influxdb.Authorizer) *httptest.Server, func(
 	}
 	if err := ds.CreateDocument(ctx, adoc,
 		// make the org owner of the document
-		influxdb.AuthorizedWithOrgID(mock.Authorization{}, org.ID),
+		authorizer.CreateDocumentAuthorizerOptionOrgID(ctx, org.ID),
 		influxdb.WithLabel(l1.ID),
 		influxdb.WithLabel(l2.ID)); err != nil {
 		panic(err)
@@ -70,7 +71,7 @@ func setup(t *testing.T) (func(auth influxdb.Authorizer) *httptest.Server, func(
 	backend := NewMockDocumentBackend(t)
 	backend.HTTPErrorHandler = http.ErrorHandler(0)
 	backend.DocumentService = svc
-	backend.LabelService = svc
+	backend.LabelService = authorizer.NewLabelService(svc)
 	serverFn := func(auth influxdb.Authorizer) *httptest.Server {
 		handler := httpmock.NewAuthMiddlewareHandler(NewDocumentHandler(backend), auth)
 		return httptest.NewServer(handler)
@@ -87,26 +88,99 @@ func setup(t *testing.T) (func(auth influxdb.Authorizer) *httptest.Server, func(
 	return serverFn, clientFn, f
 }
 
-func (f fixture) authForDocument(action influxdb.Action) influxdb.Authorizer {
+func (f fixture) permsForDocument(action influxdb.Action) []influxdb.Permission {
+	return []influxdb.Permission{
+		{
+			Action: action,
+			Resource: influxdb.Resource{
+				Type: influxdb.DocumentsResourceType,
+				ID:   &f.Document.ID,
+			},
+		},
+	}
+}
+
+func (f fixture) permsForDocuments(action influxdb.Action) []influxdb.Permission {
+	return append(f.permsForDocument(action), influxdb.Permission{
+		Action: action,
+		Resource: influxdb.Resource{
+			Type: influxdb.DocumentsResourceType,
+			ID:   &f.AnotherDocument.ID,
+		},
+	})
+}
+
+func (f fixture) permsForLabels(action influxdb.Action) []influxdb.Permission {
+	var ps []influxdb.Permission
+	for _, l := range f.Labels {
+		ps = append(ps, influxdb.Permission{
+			Action: action,
+			Resource: influxdb.Resource{
+				Type: influxdb.LabelsResourceType,
+				ID:   &l.ID,
+			},
+		})
+	}
+	return ps
+}
+
+func (f fixture) authForCreation() influxdb.Authorizer {
 	return &influxdb.Authorization{
 		Permissions: []influxdb.Permission{
-			// Access the document with this specific action.
 			{
-				Action: action,
+				Action: influxdb.WriteAction,
 				Resource: influxdb.Resource{
-					Type: influxdb.DocumentsResourceType,
-					ID:   &f.Document.ID,
-				},
-			},
-			// Access all documents.
-			{
-				Action: influxdb.ReadAction,
-				Resource: influxdb.Resource{
-					Type:  influxdb.OrgsResourceType,
+					Type:  influxdb.DocumentsResourceType,
 					OrgID: &f.Org.ID,
 				},
 			},
 		},
+		Status: influxdb.Active,
+	}
+}
+
+func (f fixture) authForDocument(actions ...influxdb.Action) influxdb.Authorizer {
+	var perms []influxdb.Permission
+	for _, a := range actions {
+		perms = append(perms, f.permsForDocument(a)...)
+	}
+	return &influxdb.Authorization{
+		Permissions: perms,
+		Status:      influxdb.Active,
+	}
+}
+
+func (f fixture) authForDocuments(actions ...influxdb.Action) influxdb.Authorizer {
+	var perms []influxdb.Permission
+	for _, a := range actions {
+		perms = append(perms, f.permsForDocuments(a)...)
+	}
+	return &influxdb.Authorization{
+		Permissions: perms,
+		Status:      influxdb.Active,
+	}
+}
+
+func (f fixture) authForDocumentAndLabels(actions ...influxdb.Action) influxdb.Authorizer {
+	var perms []influxdb.Permission
+	for _, a := range actions {
+		perms = append(perms, f.permsForDocument(a)...)
+		perms = append(perms, f.permsForLabels(a)...)
+	}
+	return &influxdb.Authorization{
+		Permissions: perms,
+		Status:      influxdb.Active,
+	}
+}
+
+func (f fixture) fullAuth() influxdb.Authorizer {
+	return &influxdb.Authorization{
+		Permissions: append(
+			f.permsForDocuments(influxdb.ReadAction), append(append(
+				f.permsForDocuments(influxdb.WriteAction),
+				f.permsForLabels(influxdb.ReadAction)...),
+				f.permsForLabels(influxdb.WriteAction)...)...,
+		),
 		Status: influxdb.Active,
 	}
 }
@@ -161,7 +235,7 @@ func TestDocumentService(t *testing.T) {
 func CreateDocument(t *testing.T) {
 	t.Run("with content", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(mock.Authorization{})
+		server := serverFn(fx.authForCreation())
 		defer server.Close()
 		client := clientFn(server.URL)
 		orgID := fx.Org.ID
@@ -184,7 +258,7 @@ func CreateDocument(t *testing.T) {
 
 	t.Run("with content and labels", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(mock.Authorization{})
+		server := serverFn(fx.authForCreation())
 		defer server.Close()
 		client := clientFn(server.URL)
 		orgID := fx.Org.ID
@@ -208,7 +282,7 @@ func CreateDocument(t *testing.T) {
 
 	t.Run("bad label", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(mock.Authorization{})
+		server := serverFn(fx.authForCreation())
 		defer server.Close()
 		client := clientFn(server.URL)
 		orgID := fx.Org.ID
@@ -241,7 +315,7 @@ func CreateDocument(t *testing.T) {
 			Content: "I am the content",
 		}
 		if err := client.CreateDocument(context.Background(), namespace, fx.Org.ID, d); err != nil {
-			if !strings.HasPrefix(err.Error(), "authorization cannot add org as document owner") {
+			if !strings.Contains(err.Error(), "unauthorized") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		} else {
@@ -284,7 +358,7 @@ func GetDocument(t *testing.T) {
 		defer server.Close()
 		client := clientFn(server.URL)
 		if _, err := client.GetDocument(context.Background(), namespace, id); err != nil {
-			if !strings.HasPrefix(err.Error(), "document not found") {
+			if !strings.Contains(err.Error(), "document not found") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		} else {
@@ -300,7 +374,7 @@ func GetDocument(t *testing.T) {
 		defer server.Close()
 		client := clientFn(server.URL)
 		if _, err := client.GetDocument(context.Background(), namespace, fx.Document.ID); err != nil {
-			if !strings.HasPrefix(err.Error(), "authorization cannot access document") {
+			if !strings.Contains(err.Error(), "unauthorized") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		} else {
@@ -312,18 +386,7 @@ func GetDocument(t *testing.T) {
 func GetDocuments(t *testing.T) {
 	t.Run("get existing documents", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(&influxdb.Authorization{
-			Permissions: []influxdb.Permission{
-				{
-					Action: influxdb.ReadAction,
-					Resource: influxdb.Resource{
-						Type:  influxdb.OrgsResourceType,
-						OrgID: &fx.Org.ID,
-					},
-				},
-			},
-			Status: influxdb.Active,
-		})
+		server := serverFn(fx.authForDocuments(influxdb.ReadAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		got, err := client.GetDocuments(context.Background(), namespace, fx.Org.ID)
@@ -345,22 +408,20 @@ func GetDocuments(t *testing.T) {
 		})
 		defer server.Close()
 		client := clientFn(server.URL)
-		if _, err := client.GetDocuments(context.Background(), namespace, fx.Org.ID); err != nil {
-			if !strings.HasPrefix(err.Error(), "authorizer cannot access documents") {
-				t.Errorf("unexpected error: %v", err)
-			}
-		} else {
-			t.Error("expected error got none")
+		docs, err := client.GetDocuments(context.Background(), namespace, fx.Org.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(docs) > 0 {
+			t.Fatalf("no document expected, returned %v instead", docs)
 		}
 	})
 }
 
 func UpdateDocument(t *testing.T) {
-	// TODO(affo): investigate why all these tests pass both with a mock.Authorization{}
-	//  and a fx.authForDocument(influxdb.WriteAction) and GetDocument tests need a specific auth.
 	t.Run("update content", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(mock.Authorization{})
+		server := serverFn(fx.authForDocument(influxdb.ReadAction, influxdb.WriteAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		want := fx.Document
@@ -379,7 +440,7 @@ func UpdateDocument(t *testing.T) {
 
 	t.Run("update labels", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(mock.Authorization{})
+		server := serverFn(fx.authForDocument(influxdb.ReadAction, influxdb.WriteAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		want := fx.Document
@@ -398,7 +459,7 @@ func UpdateDocument(t *testing.T) {
 
 	t.Run("update meta", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(mock.Authorization{})
+		server := serverFn(fx.authForDocument(influxdb.ReadAction, influxdb.WriteAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		want := fx.Document
@@ -417,13 +478,13 @@ func UpdateDocument(t *testing.T) {
 
 	t.Run("unauthorized - another document", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(fx.authForDocument(influxdb.WriteAction))
+		server := serverFn(fx.authForDocument(influxdb.ReadAction, influxdb.WriteAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		want := fx.AnotherDocument
 		want.Content = "new content"
 		if err := client.UpdateDocument(context.Background(), namespace, want); err != nil {
-			if !strings.HasPrefix(err.Error(), "authorization cannot access document") {
+			if !strings.Contains(err.Error(), "unauthorized") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		} else {
@@ -439,7 +500,7 @@ func UpdateDocument(t *testing.T) {
 		want := fx.Document
 		want.Content = "new content"
 		if err := client.UpdateDocument(context.Background(), namespace, want); err != nil {
-			if !strings.HasPrefix(err.Error(), "authorization cannot access document") {
+			if !strings.Contains(err.Error(), "unauthorized") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		} else {
@@ -452,7 +513,7 @@ func DeleteDocument(t *testing.T) {
 	t.Run("existing", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
 		want := fx.Document
-		server := serverFn(fx.authForDocument(influxdb.WriteAction))
+		server := serverFn(fx.authForDocuments(influxdb.ReadAction, influxdb.WriteAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		pre, err := client.GetDocuments(context.Background(), namespace, fx.Org.ID)
@@ -477,25 +538,7 @@ func DeleteDocument(t *testing.T) {
 	t.Run("non existing", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
 		id := fx.Document.ID + 42
-		server := serverFn(&influxdb.Authorization{
-			Permissions: []influxdb.Permission{
-				{
-					Action: influxdb.ReadAction,
-					Resource: influxdb.Resource{
-						Type: influxdb.DocumentsResourceType,
-						ID:   &id,
-					},
-				},
-				{
-					Action: influxdb.ReadAction,
-					Resource: influxdb.Resource{
-						Type:  influxdb.OrgsResourceType,
-						OrgID: &fx.Org.ID,
-					},
-				},
-			},
-			Status: influxdb.Active,
-		})
+		server := serverFn(fx.authForDocuments(influxdb.ReadAction, influxdb.WriteAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		if err := client.DeleteDocument(context.Background(), namespace, id); err != nil {
@@ -517,15 +560,12 @@ func DeleteDocument(t *testing.T) {
 	})
 
 	t.Run("unauthorized", func(t *testing.T) {
-		// TODO(affo)
-		t.Skip("should not be able to delete with read permission")
-
 		serverFn, clientFn, fx := setup(t)
 		server := serverFn(fx.authForDocument(influxdb.ReadAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		if err := client.DeleteDocument(context.Background(), namespace, fx.Document.ID); err != nil {
-			if !strings.HasPrefix(err.Error(), "authorization cannot access document") {
+			if !strings.Contains(err.Error(), "unauthorized") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		} else {
@@ -556,7 +596,7 @@ func GetLabels(t *testing.T) {
 		defer server.Close()
 		client := clientFn(server.URL)
 		if _, err := client.GetDocumentLabels(context.Background(), namespace, fx.AnotherDocument.ID); err != nil {
-			if !strings.HasPrefix(err.Error(), "authorization cannot access document") {
+			if !strings.Contains(err.Error(), "unauthorized") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		} else {
@@ -568,7 +608,7 @@ func GetLabels(t *testing.T) {
 func AddLabels(t *testing.T) {
 	t.Run("add one", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(fx.authForDocument(influxdb.WriteAction))
+		server := serverFn(fx.fullAuth())
 		defer server.Close()
 		client := clientFn(server.URL)
 		got, err := client.AddDocumentLabel(context.Background(), namespace, fx.Document.ID, fx.Labels[1].ID)
@@ -590,15 +630,12 @@ func AddLabels(t *testing.T) {
 	})
 
 	t.Run("unauthorized", func(t *testing.T) {
-		// TODO(affo)
-		t.Skip("should not be able to add label with read permission")
-
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(fx.authForDocument(influxdb.ReadAction))
+		server := serverFn(fx.authForDocumentAndLabels(influxdb.ReadAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		if _, err := client.AddDocumentLabel(context.Background(), namespace, fx.Document.ID, fx.Labels[1].ID); err != nil {
-			if !strings.HasPrefix(err.Error(), "authorization cannot access document") {
+			if !strings.Contains(err.Error(), "unauthorized") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		} else {
@@ -608,7 +645,7 @@ func AddLabels(t *testing.T) {
 
 	t.Run("add same twice", func(t *testing.T) {
 		// TODO(affo)
-		t.Skip("should not be able to add the same label twice")
+		t.Skip("see https://github.com/influxdata/influxdb/issues/17092")
 
 		serverFn, clientFn, fx := setup(t)
 		server := serverFn(fx.authForDocument(influxdb.WriteAction))
@@ -627,7 +664,7 @@ func AddLabels(t *testing.T) {
 func DeleteLabel(t *testing.T) {
 	t.Run("existing", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(fx.authForDocument(influxdb.WriteAction))
+		server := serverFn(fx.fullAuth())
 		defer server.Close()
 		client := clientFn(server.URL)
 		pre, err := client.GetDocumentLabels(context.Background(), namespace, fx.Document.ID)
@@ -651,7 +688,7 @@ func DeleteLabel(t *testing.T) {
 
 	t.Run("non existing", func(t *testing.T) {
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(fx.authForDocument(influxdb.WriteAction))
+		server := serverFn(fx.authForDocumentAndLabels(influxdb.ReadAction, influxdb.WriteAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		if err := client.DeleteDocumentLabel(context.Background(), namespace, fx.Document.ID, fx.Labels[2].ID+42); err != nil {
@@ -673,15 +710,12 @@ func DeleteLabel(t *testing.T) {
 	})
 
 	t.Run("unauthorized", func(t *testing.T) {
-		// TODO(affo)
-		t.Skip("should not be able to delete label with read permission")
-
 		serverFn, clientFn, fx := setup(t)
-		server := serverFn(fx.authForDocument(influxdb.ReadAction))
+		server := serverFn(fx.authForDocumentAndLabels(influxdb.ReadAction))
 		defer server.Close()
 		client := clientFn(server.URL)
 		if err := client.DeleteDocumentLabel(context.Background(), namespace, fx.Document.ID, fx.Document.Labels[0].ID); err != nil {
-			if !strings.HasPrefix(err.Error(), "authorization cannot access document") {
+			if !strings.Contains(err.Error(), "unauthorized") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		} else {

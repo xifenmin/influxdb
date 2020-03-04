@@ -10,6 +10,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/influxdata/influxdb"
+	"github.com/influxdata/influxdb/authorizer"
+	icontext "github.com/influxdata/influxdb/context"
 	"github.com/influxdata/influxdb/kv"
 	"github.com/influxdata/influxdb/mock"
 	"go.uber.org/zap"
@@ -52,12 +54,41 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 
 		MustMakeUsersOrgOwner(ctx, svc, o1.ID, u1.ID)
 
-		MustMakeUsersOrgMember(ctx, svc, o1.ID, u2.ID)
 		MustMakeUsersOrgOwner(ctx, svc, o2.ID, u2.ID)
+		MustMakeUsersOrgMember(ctx, svc, o1.ID, u2.ID)
 
 		// TODO(desa): test tokens and authorizations as well.
-		s1 := &influxdb.Session{UserID: u1.ID}
-		s2 := &influxdb.Session{UserID: u2.ID}
+		now := time.Now()
+		s1 := &influxdb.Session{
+			CreatedAt: now,
+			ExpiresAt: now.Add(1 * time.Hour),
+			UserID:    u1.ID,
+			Permissions: []influxdb.Permission{
+				// create doc for o1
+				{
+					Action: influxdb.WriteAction,
+					Resource: influxdb.Resource{
+						OrgID: &o1.ID,
+						Type:  influxdb.DocumentsResourceType,
+					},
+				},
+			},
+		}
+		s2 := &influxdb.Session{
+			CreatedAt: now,
+			ExpiresAt: now.Add(1 * time.Hour),
+			UserID:    u2.ID,
+			Permissions: []influxdb.Permission{
+				// create doc for o2
+				{
+					Action: influxdb.WriteAction,
+					Resource: influxdb.Resource{
+						OrgID: &o2.ID,
+						Type:  influxdb.DocumentsResourceType,
+					},
+				},
+			},
+		}
 
 		var d1 *influxdb.Document
 		var d2 *influxdb.Document
@@ -74,11 +105,42 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 					"v1": "v1",
 				},
 			}
+			ctx := context.Background()
+			ctx = icontext.SetAuthorizer(ctx, s1)
+
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 0, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d1, influxdb.AuthorizedWithOrg(s1, o1.Name), influxdb.WithLabel(l1.ID)); err != nil {
+			if err := s.CreateDocument(ctx, d1, authorizer.CreateDocumentAuthorizerOptionOrg(ctx, o1.Name), influxdb.WithLabel(l1.ID)); err != nil {
 				t.Errorf("failed to create document: %v", err)
 			}
 		})
+
+		// u1 owns d1
+		s1.Permissions = append(s1.Permissions,
+			influxdb.Permission{
+				Action: influxdb.ReadAction,
+				Resource: influxdb.Resource{
+					ID:   &d1.ID,
+					Type: influxdb.DocumentsResourceType,
+				},
+			},
+			influxdb.Permission{
+				Action: influxdb.WriteAction,
+				Resource: influxdb.Resource{
+					ID:   &d1.ID,
+					Type: influxdb.DocumentsResourceType,
+				},
+			},
+		)
+		// u2 is part of o1
+		s2.Permissions = append(s2.Permissions,
+			influxdb.Permission{
+				Action: influxdb.ReadAction,
+				Resource: influxdb.Resource{
+					ID:   &d1.ID,
+					Type: influxdb.DocumentsResourceType,
+				},
+			},
+		)
 
 		t.Run("u2 cannot create document for o1", func(t *testing.T) {
 			d2 = &influxdb.Document{
@@ -89,16 +151,37 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 					"i2": "i2",
 				},
 			}
+			ctx := context.Background()
+			ctx = icontext.SetAuthorizer(ctx, s2)
+
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 1, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d2, influxdb.AuthorizedWithOrg(s2, o1.Name), influxdb.WithLabel(l2.ID)); err == nil {
+			if err := s.CreateDocument(ctx, d2, authorizer.CreateDocumentAuthorizerOptionOrg(ctx, o1.Name), influxdb.WithLabel(l2.ID)); err == nil {
 				t.Fatalf("should not have be authorized to create document")
 			}
 
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 1, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d2, influxdb.AuthorizedWithOrg(s2, o2.Name)); err != nil {
+			if err := s.CreateDocument(ctx, d2, authorizer.CreateDocumentAuthorizerOptionOrg(ctx, o2.Name)); err != nil {
 				t.Errorf("should have been authorized to create document: %v", err)
 			}
 		})
+
+		// u2 owns d2
+		s2.Permissions = append(s2.Permissions,
+			influxdb.Permission{
+				Action: influxdb.ReadAction,
+				Resource: influxdb.Resource{
+					ID:   &d2.ID,
+					Type: influxdb.DocumentsResourceType,
+				},
+			},
+			influxdb.Permission{
+				Action: influxdb.WriteAction,
+				Resource: influxdb.Resource{
+					ID:   &d2.ID,
+					Type: influxdb.DocumentsResourceType,
+				},
+			},
+		)
 
 		t.Run("u1 cannot create document for o2", func(t *testing.T) {
 			d3 = &influxdb.Document{
@@ -109,8 +192,11 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 					"k2": "v2",
 				},
 			}
+			ctx := context.Background()
+			ctx = icontext.SetAuthorizer(ctx, s1)
+
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 2, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d3, influxdb.AuthorizedWithOrg(s1, o2.Name)); err == nil {
+			if err := s.CreateDocument(ctx, d3, authorizer.CreateDocumentAuthorizerOptionOrg(ctx, o2.Name)); err == nil {
 				t.Errorf("should not have be authorized to create document")
 			}
 		})
@@ -162,7 +248,9 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 		})
 
 		t.Run("u1 can see o1s documents by label", func(t *testing.T) {
-			ds, err := ss.FindDocuments(ctx, influxdb.AuthorizedWhere(s1), influxdb.IncludeContent, influxdb.IncludeLabels)
+			ctx := context.Background()
+			ctx = icontext.SetAuthorizer(ctx, s1)
+			ds, err := ss.FindDocuments(ctx, authorizer.GetDocumentsAuthorizerOptionOrg(ctx, o1.Name), influxdb.IncludeContent, influxdb.IncludeLabels)
 
 			if err != nil {
 				t.Fatalf("failed to retrieve documents: %v", err)
@@ -182,12 +270,18 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 		})
 
 		t.Run("u2 can see o1 and o2s documents", func(t *testing.T) {
-			ds, err := ss.FindDocuments(ctx, influxdb.AuthorizedWhere(s2), influxdb.IncludeContent, influxdb.IncludeLabels)
+			ctx := context.Background()
+			ctx = icontext.SetAuthorizer(ctx, s2)
+			ds1, err := ss.FindDocuments(ctx, authorizer.GetDocumentsAuthorizerOptionOrg(ctx, o1.Name), influxdb.IncludeContent, influxdb.IncludeLabels)
 			if err != nil {
-				t.Fatalf("failed to retrieve documents: %v", err)
+				t.Fatalf("failed to retrieve documents for org1: %v", err)
+			}
+			ds2, err := ss.FindDocuments(ctx, authorizer.GetDocumentsAuthorizerOptionOrg(ctx, o2.Name), influxdb.IncludeContent, influxdb.IncludeLabels)
+			if err != nil {
+				t.Fatalf("failed to retrieve documents for org2: %v", err)
 			}
 
-			if exp, got := []*influxdb.Document{dl1, dl2}, ds; !docsEqual(exp, got) {
+			if exp, got := []*influxdb.Document{dl1, dl2}, append(ds1, ds2...); !docsEqual(exp, got) {
 				t.Errorf("documents are different -got/+want\ndiff %s", docsDiff(exp, got))
 			}
 		})
@@ -202,7 +296,9 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 					"updatev1": "updatev1",
 				},
 			}
-			if err := s.UpdateDocument(ctx, d, influxdb.Authorized(s2)); err == nil {
+			ctx := context.Background()
+			ctx = icontext.SetAuthorizer(ctx, s2)
+			if err := s.UpdateDocument(ctx, d, authorizer.UpdateDocumentAuthorizerOption(ctx, d.ID)); err == nil {
 				t.Errorf("should not have been authorized to update document")
 				return
 			}
@@ -218,13 +314,17 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 					"updatev2": "updatev2",
 				},
 			}
-			if err := s.UpdateDocument(ctx, d, influxdb.Authorized(s2)); err != nil {
+			ctx := context.Background()
+			ctx = icontext.SetAuthorizer(ctx, s2)
+			if err := s.UpdateDocument(ctx, d, authorizer.UpdateDocumentAuthorizerOption(ctx, d.ID)); err != nil {
 				t.Errorf("unexpected error updating document: %v", err)
 			}
 		})
 
 		t.Run("u1 can update document d1", func(t *testing.T) {
-			if err := s.DeleteDocuments(ctx, influxdb.AuthorizedWhereID(s1, d1.ID)); err != nil {
+			ctx := context.Background()
+			ctx = icontext.SetAuthorizer(ctx, s1)
+			if err := s.DeleteDocuments(ctx, authorizer.DeleteDocumentAuthorizerOption(ctx, d1.ID)); err != nil {
 				t.Errorf("unexpected error deleteing document: %v", err)
 			}
 		})
