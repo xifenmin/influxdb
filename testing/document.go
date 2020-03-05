@@ -109,7 +109,7 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 			ctx = icontext.SetAuthorizer(ctx, s1)
 
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 0, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d1, authorizer.CreateDocumentAuthorizerOptionOrg(ctx, o1.Name), influxdb.WithLabel(l1.ID)); err != nil {
+			if err := s.CreateDocument(ctx, d1, authorizer.CreateDocumentAuthorizerOption(ctx, 0, o1.Name), influxdb.WithLabel(l1.ID)); err != nil {
 				t.Errorf("failed to create document: %v", err)
 			}
 		})
@@ -155,12 +155,12 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 			ctx = icontext.SetAuthorizer(ctx, s2)
 
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 1, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d2, authorizer.CreateDocumentAuthorizerOptionOrg(ctx, o1.Name), influxdb.WithLabel(l2.ID)); err == nil {
+			if err := s.CreateDocument(ctx, d2, authorizer.CreateDocumentAuthorizerOption(ctx, 0, o1.Name), influxdb.WithLabel(l2.ID)); err == nil {
 				t.Fatalf("should not have be authorized to create document")
 			}
 
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 1, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d2, authorizer.CreateDocumentAuthorizerOptionOrg(ctx, o2.Name)); err != nil {
+			if err := s.CreateDocument(ctx, d2, authorizer.CreateDocumentAuthorizerOption(ctx, 0, o2.Name)); err != nil {
 				t.Errorf("should have been authorized to create document: %v", err)
 			}
 		})
@@ -196,11 +196,12 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 			ctx = icontext.SetAuthorizer(ctx, s1)
 
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 2, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d3, authorizer.CreateDocumentAuthorizerOptionOrg(ctx, o2.Name)); err == nil {
+			if err := s.CreateDocument(ctx, d3, authorizer.CreateDocumentAuthorizerOption(ctx, 0, o2.Name)); err == nil {
 				t.Errorf("should not have be authorized to create document")
 			}
 		})
 
+		/* Affo: This is not allowed now.
 		t.Run("can create unowned document", func(t *testing.T) {
 			// TODO(desa): should this be allowed?
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 2, 0, time.UTC)
@@ -208,6 +209,7 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 				t.Fatalf("should have been able to create document: %v", err)
 			}
 		})
+		 */
 
 		t.Run("can't create document with unexisted label", func(t *testing.T) {
 			d4 := &influxdb.Document{
@@ -218,7 +220,9 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 					"k4": "v4",
 				},
 			}
-			err = s.CreateDocument(ctx, d4, influxdb.WithLabel(lBad.ID))
+			ctx := context.Background()
+			ctx = icontext.SetAuthorizer(ctx, s1)
+			err = s.CreateDocument(ctx, d4, authorizer.CreateDocumentAuthorizerOption(ctx, 0, o1.Name), influxdb.WithLabel(lBad.ID))
 			ErrorsEqual(t, err, &influxdb.Error{
 				Code: influxdb.ENotFound,
 				Msg:  "label not found",
@@ -242,7 +246,9 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to retrieve documents: %v", err)
 			}
-			if exp, got := []*influxdb.Document{d1, d2, d3}, ds; !docsMetaEqual(exp, got) {
+			// Affo: there is no d3 now.
+			// if exp, got := []*influxdb.Document{d1, d2, d3}, ds; !docsMetaEqual(exp, got) {
+			if exp, got := []*influxdb.Document{d1, d2}, ds; !docsMetaEqual(exp, got) {
 				t.Errorf("documents are different -got/+want\ndiff %s", docsMetaDiff(exp, got))
 			}
 		})
@@ -250,7 +256,7 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 		t.Run("u1 can see o1s documents by label", func(t *testing.T) {
 			ctx := context.Background()
 			ctx = icontext.SetAuthorizer(ctx, s1)
-			ds, err := ss.FindDocuments(ctx, authorizer.GetDocumentsAuthorizerOptionOrg(ctx, o1.Name), influxdb.IncludeContent, influxdb.IncludeLabels)
+			ds, err := ss.FindDocuments(ctx, authorizer.GetDocumentsAuthorizerOption(ctx, 0, o1.Name), influxdb.IncludeContent, influxdb.IncludeLabels)
 
 			if err != nil {
 				t.Fatalf("failed to retrieve documents: %v", err)
@@ -272,11 +278,11 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 		t.Run("u2 can see o1 and o2s documents", func(t *testing.T) {
 			ctx := context.Background()
 			ctx = icontext.SetAuthorizer(ctx, s2)
-			ds1, err := ss.FindDocuments(ctx, authorizer.GetDocumentsAuthorizerOptionOrg(ctx, o1.Name), influxdb.IncludeContent, influxdb.IncludeLabels)
+			ds1, err := ss.FindDocuments(ctx, authorizer.GetDocumentsAuthorizerOption(ctx, 0, o1.Name), influxdb.IncludeContent, influxdb.IncludeLabels)
 			if err != nil {
 				t.Fatalf("failed to retrieve documents for org1: %v", err)
 			}
-			ds2, err := ss.FindDocuments(ctx, authorizer.GetDocumentsAuthorizerOptionOrg(ctx, o2.Name), influxdb.IncludeContent, influxdb.IncludeLabels)
+			ds2, err := ss.FindDocuments(ctx, authorizer.GetDocumentsAuthorizerOption(ctx, 0, o2.Name), influxdb.IncludeContent, influxdb.IncludeLabels)
 			if err != nil {
 				t.Fatalf("failed to retrieve documents for org2: %v", err)
 			}

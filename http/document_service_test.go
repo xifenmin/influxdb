@@ -44,6 +44,13 @@ func setup(t *testing.T) (func(auth influxdb.Authorizer) *httptest.Server, func(
 
 	org := &influxdb.Organization{Name: "org"}
 	itesting.MustCreateOrgs(ctx, svc, org)
+	user := &influxdb.User{
+		Name:   "howdy",
+		Status: influxdb.Active,
+	}
+	itesting.MustCreateUsers(ctx, svc, user)
+	// The user must be an owner to update/delete.
+	itesting.MustMakeUsersOrgOwner(ctx, svc, org.ID, user.ID)
 	l1 := &influxdb.Label{Name: "l1", OrgID: org.ID}
 	l2 := &influxdb.Label{Name: "l2", OrgID: org.ID}
 	l3 := &influxdb.Label{Name: "l3", OrgID: org.ID}
@@ -52,8 +59,7 @@ func setup(t *testing.T) (func(auth influxdb.Authorizer) *httptest.Server, func(
 		Content: "I am a free document",
 	}
 	if err := ds.CreateDocument(ctx, doc,
-		// make the org owner of the document
-		authorizer.CreateDocumentAuthorizerOptionOrgID(ctx, org.ID),
+		authorizer.CreateDocumentAuthorizerOption(ctx, org.ID, ""),
 		influxdb.WithLabel(l1.ID),
 		influxdb.WithLabel(l3.ID)); err != nil {
 		panic(err)
@@ -62,8 +68,7 @@ func setup(t *testing.T) (func(auth influxdb.Authorizer) *httptest.Server, func(
 		Content: "I am another document",
 	}
 	if err := ds.CreateDocument(ctx, adoc,
-		// make the org owner of the document
-		authorizer.CreateDocumentAuthorizerOptionOrgID(ctx, org.ID),
+		authorizer.CreateDocumentAuthorizerOption(ctx, org.ID, ""),
 		influxdb.WithLabel(l1.ID),
 		influxdb.WithLabel(l2.ID)); err != nil {
 		panic(err)
@@ -73,6 +78,10 @@ func setup(t *testing.T) (func(auth influxdb.Authorizer) *httptest.Server, func(
 	backend.DocumentService = svc
 	backend.LabelService = authorizer.NewLabelService(svc)
 	serverFn := func(auth influxdb.Authorizer) *httptest.Server {
+		switch a := auth.(type) {
+		case *influxdb.Authorization:
+			a.UserID = user.ID
+		}
 		handler := httpmock.NewAuthMiddlewareHandler(NewDocumentHandler(backend), auth)
 		return httptest.NewServer(handler)
 	}

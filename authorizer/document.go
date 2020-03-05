@@ -10,20 +10,18 @@ import (
 
 // authorizedWithOrgID adds the provided org as an owner of the document if
 // the authorizer is allowed to access the org in being added.
-func CreateDocumentAuthorizerOptionOrg(ctx context.Context, org string) influxdb.DocumentOptions {
-	return authorizedWithOrg(ctx, org, influxdb.WriteAction)
+func CreateDocumentAuthorizerOption(ctx context.Context, orgID influxdb.ID, orgName string) influxdb.DocumentOptions {
+	if orgID.Valid() {
+		return authorizedWithOrgID(ctx, orgID, influxdb.WriteAction)
+	}
+	return authorizedWithOrg(ctx, orgName, influxdb.WriteAction)
 }
 
-func CreateDocumentAuthorizerOptionOrgID(ctx context.Context, orgID influxdb.ID) influxdb.DocumentOptions {
-	return authorizedWithOrgID(ctx, orgID, influxdb.WriteAction)
-}
-
-func GetDocumentsAuthorizerOptionOrg(ctx context.Context, org string) influxdb.DocumentFindOptions {
-	return authorizedWhereOrg(ctx, org)
-}
-
-func GetDocumentsAuthorizerOptionOrgID(ctx context.Context, orgID influxdb.ID) influxdb.DocumentFindOptions {
-	return authorizedWhereOrgID(ctx, orgID)
+func GetDocumentsAuthorizerOption(ctx context.Context, orgID influxdb.ID, orgName string) influxdb.DocumentFindOptions {
+	if orgID.Valid() {
+		return authorizedWhereOrgID(ctx, orgID)
+	}
+	return authorizedWhereOrg(ctx, orgName)
 }
 
 func GetDocumentAuthorizerOption(ctx context.Context, docID influxdb.ID) influxdb.DocumentFindOptions {
@@ -126,16 +124,10 @@ func authorizedWithOrgID(ctx context.Context, orgID influxdb.ID, action influxdb
 		if err != nil {
 			return err
 		}
-		a, err := icontext.GetAuthorizer(ctx)
-		if err != nil {
+		if err := IsAllowed(ctx, *p); err != nil {
 			return err
 		}
-		if err := IsAuthorizerAllowed(a, *p); err != nil {
-			return err
-		}
-		if err := idx.IsOrgAccessor(a.GetUserID(), orgID); err != nil {
-			return err
-		}
+		// This is required for retrieving later.
 		return idx.AddDocumentOwner(id, "org", orgID)
 	}
 }
@@ -153,13 +145,6 @@ func authorizedWithOrg(ctx context.Context, org string, action influxdb.Action) 
 func authorizedWhereOrgID(ctx context.Context, orgID influxdb.ID) influxdb.DocumentFindOptions {
 	return func(idx influxdb.DocumentIndex, dec influxdb.DocumentDecorator) ([]influxdb.ID, error) {
 		if err := idx.FindOrganizationByID(orgID); err != nil {
-			return nil, err
-		}
-		a, err := icontext.GetAuthorizer(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if err := idx.IsOrgAccessor(a.GetUserID(), orgID); err != nil {
 			return nil, err
 		}
 		ids, err := idx.GetAccessorsDocuments("org", orgID)

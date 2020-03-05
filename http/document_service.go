@@ -93,14 +93,14 @@ func NewDocumentHandler(b *DocumentBackend) *DocumentHandler {
 	return h
 }
 
-func validateOrgParams(org string, orgID *influxdb.ID) error {
-	if org != "" && orgID != nil {
+func validateOrgParams(org string, orgID influxdb.ID) error {
+	if org != "" && orgID.Valid() {
 		return &influxdb.Error{
 			Code: influxdb.EInvalid,
 			Msg:  "Please provide either org or orgID, not both",
 		}
 	}
-	if orgID != nil && orgID.Valid() {
+	if orgID.Valid() {
 		return nil
 	}
 	if org != "" {
@@ -159,15 +159,11 @@ func (h *DocumentHandler) handlePostDocument(w http.ResponseWriter, r *http.Requ
 	}
 
 	var opts []influxdb.DocumentOptions
-	if err := validateOrgParams(req.Org, &req.OrgID); err != nil {
+	if err := validateOrgParams(req.Org, req.OrgID); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
-	if req.OrgID.Valid() {
-		opts = append(opts, authorizer.CreateDocumentAuthorizerOptionOrgID(ctx, req.OrgID))
-	} else {
-		opts = append(opts, authorizer.CreateDocumentAuthorizerOptionOrg(ctx, req.Org))
-	}
+	opts = append(opts, authorizer.CreateDocumentAuthorizerOption(ctx, req.OrgID, req.Org))
 	for _, label := range req.Labels {
 		// TODO(desa): make these AuthorizedWithLabel eventually
 		opts = append(opts, influxdb.WithLabel(label))
@@ -243,11 +239,7 @@ func (h *DocumentHandler) handleGetDocuments(w http.ResponseWriter, r *http.Requ
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
-	if req.OrgID.Valid() {
-		opts = append(opts, authorizer.GetDocumentsAuthorizerOptionOrgID(ctx, *req.OrgID))
-	} else {
-		opts = append(opts, authorizer.GetDocumentsAuthorizerOptionOrg(ctx, req.Org))
-	}
+	opts = append(opts, authorizer.GetDocumentsAuthorizerOption(ctx, req.OrgID, req.Org))
 
 	ds, err := s.FindDocuments(ctx, opts...)
 	if err != nil {
@@ -265,7 +257,7 @@ func (h *DocumentHandler) handleGetDocuments(w http.ResponseWriter, r *http.Requ
 type getDocumentsRequest struct {
 	Namespace string
 	Org       string
-	OrgID     *influxdb.ID
+	OrgID     influxdb.ID
 }
 
 func decodeGetDocumentsRequest(ctx context.Context, r *http.Request) (*getDocumentsRequest, error) {
@@ -279,23 +271,22 @@ func decodeGetDocumentsRequest(ctx context.Context, r *http.Request) (*getDocume
 	}
 
 	qp := r.URL.Query()
-	var oid *influxdb.ID
-	var err error
+	req := &getDocumentsRequest{
+		Namespace: ns,
+		Org:       qp.Get("org"),
+	}
 
 	if oidStr := qp.Get("orgID"); oidStr != "" {
-		oid, err = influxdb.IDFromString(oidStr)
+		oid, err := influxdb.IDFromString(oidStr)
 		if err != nil {
 			return nil, &influxdb.Error{
 				Code: influxdb.EInvalid,
 				Msg:  "Invalid orgID",
 			}
 		}
+		req.OrgID = *oid
 	}
-	return &getDocumentsRequest{
-		Namespace: ns,
-		Org:       qp.Get("org"),
-		OrgID:     oid,
-	}, nil
+	return req, nil
 }
 
 // NOTE: For label authorization we rely on LabelService being wrapped with authorizer.NewLabelService().

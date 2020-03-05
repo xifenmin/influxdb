@@ -353,8 +353,16 @@ func (s *Service) createDocument(ctx context.Context, tx Tx, ns string, d *influ
 	if err := s.putDocument(ctx, tx, ns, d); err != nil {
 		return err
 	}
+	return s.addDocumentOwner(ctx, tx, d.ID)
+}
 
-	return nil
+func (s *Service) addDocumentOwner(ctx context.Context, tx Tx, did influxdb.ID) error {
+	// TODO(affo): this is part of the URMs added on document creation.
+	//  DocumentIndex.AddDocumentOwner is another fundamental part to retrieve the document later.
+	//  That method created a owner URM of type OrgMappingType from the org to the document.
+	//  That's needed because we use DocumentIndex.GetDocumentAccessors when finding documents
+	//  that uses the OrgMappingType for finding accessors.
+	return s.addResourceOwner(ctx, tx, influxdb.DocumentsResourceType, did)
 }
 
 func (s *Service) putDocument(ctx context.Context, tx Tx, ns string, d *influxdb.Document) error {
