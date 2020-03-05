@@ -826,7 +826,14 @@ func TestService_handlePostDocuments(t *testing.T) {
 				LabelService: &mock.LabelService{},
 			},
 			args: args{
-				body: bytes.NewBuffer(doc5JSON),
+				body: func() *bytes.Buffer {
+					req := postDocumentRequest{
+						Document:  &doc5,
+						Org:       "org1",
+					}
+					m, _ := json.Marshal(req)
+					return bytes.NewBuffer(m)
+				}(),
 				queryParams: map[string][]string{
 					"org": []string{"org1"},
 				},
@@ -873,10 +880,14 @@ func TestService_handlePostDocuments(t *testing.T) {
 				},
 			},
 			args: args{
-				body: bytes.NewBuffer(doc6JSON),
-				queryParams: map[string][]string{
-					"org": []string{"org1"},
-				},
+				body: func() *bytes.Buffer {
+					req := postDocumentRequest{
+						Document:  &doc6,
+						Org:       "org1",
+					}
+					m, _ := json.Marshal(req)
+					return bytes.NewBuffer(m)
+				}(),
 				authorizer: &influxdb.Session{UserID: user1ID},
 			},
 			wants: wants{
