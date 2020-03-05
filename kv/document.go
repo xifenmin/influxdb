@@ -168,7 +168,6 @@ func (i *DocumentIndex) AddDocumentOwner(id influxdb.ID, ownerType string, owner
 	if err := i.ownerExists(ownerType, ownerID); err != nil {
 		return err
 	}
-
 	// TODO(desa): support users owning resources.
 
 	m := &influxdb.UserResourceMapping{
@@ -325,7 +324,6 @@ func (i *DocumentIndex) GetAccessorsDocuments(ownerType string, ownerID influxdb
 	if err := i.ownerExists(ownerType, ownerID); err != nil {
 		return nil, err
 	}
-
 	f := influxdb.UserResourceMappingFilter{
 		UserID:       ownerID,
 		ResourceType: influxdb.DocumentsResourceType,
@@ -350,19 +348,7 @@ func (s *Service) createDocument(ctx context.Context, tx Tx, ns string, d *influ
 	d.ID = s.IDGenerator.ID()
 	d.Meta.CreatedAt = s.Now()
 	d.Meta.UpdatedAt = s.Now()
-	if err := s.putDocument(ctx, tx, ns, d); err != nil {
-		return err
-	}
-	return s.addDocumentOwner(ctx, tx, d.ID)
-}
-
-func (s *Service) addDocumentOwner(ctx context.Context, tx Tx, did influxdb.ID) error {
-	// TODO(affo): this is part of the URMs added on document creation.
-	//  DocumentIndex.AddDocumentOwner is another fundamental part to retrieve the document later.
-	//  That method created a owner URM of type OrgMappingType from the org to the document.
-	//  That's needed because we use DocumentIndex.GetDocumentAccessors when finding documents
-	//  that uses the OrgMappingType for finding accessors.
-	return s.addResourceOwner(ctx, tx, influxdb.DocumentsResourceType, did)
+	return s.putDocument(ctx, tx, ns, d)
 }
 
 func (s *Service) putDocument(ctx context.Context, tx Tx, ns string, d *influxdb.Document) error {
@@ -375,7 +361,6 @@ func (s *Service) putDocument(ctx context.Context, tx Tx, ns string, d *influxdb
 	}
 
 	// TODO(desa): index document meta
-
 	return nil
 }
 

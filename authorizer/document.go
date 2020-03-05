@@ -8,8 +8,12 @@ import (
 	icontext "github.com/influxdata/influxdb/context"
 )
 
-// authorizedWithOrgID adds the provided org as an owner of the document if
-// the authorizer is allowed to access the org in being added.
+// TODO(affo): this file contains the functions to create the options to pass to the corresponding method of influxdb.DocumentStore.
+//  This pattern is different from the ons in the other services, where the authorization layer is a service that wrap
+//  the vanilla one and adds permission checks.
+//  For more, see refactor_document_service.md.
+
+// CreateDocumentAuthorizerOption provides the option to pass to DocumentStore.CreateDocument for proper authorization.
 func CreateDocumentAuthorizerOption(ctx context.Context, orgID influxdb.ID, orgName string) influxdb.DocumentOptions {
 	if orgID.Valid() {
 		return authorizedWithOrgID(ctx, orgID, influxdb.WriteAction)
@@ -17,6 +21,8 @@ func CreateDocumentAuthorizerOption(ctx context.Context, orgID influxdb.ID, orgN
 	return authorizedWithOrg(ctx, orgName, influxdb.WriteAction)
 }
 
+// GetDocumentsAuthorizerOption provides the option to pass to DocumentStore.FindDocuments.
+// It makes the store return only the documents that the user in the context is allowed to read in the specified org.
 func GetDocumentsAuthorizerOption(ctx context.Context, orgID influxdb.ID, orgName string) influxdb.DocumentFindOptions {
 	if orgID.Valid() {
 		return authorizedWhereOrgID(ctx, orgID)
@@ -24,17 +30,24 @@ func GetDocumentsAuthorizerOption(ctx context.Context, orgID influxdb.ID, orgNam
 	return authorizedWhereOrg(ctx, orgName)
 }
 
+// GetDocumentAuthorizerOption provides the option to pass to DocumentStore.FindDocuments.
+// It makes the store return the document specified if authorized.
 func GetDocumentAuthorizerOption(ctx context.Context, docID influxdb.ID) influxdb.DocumentFindOptions {
 	return authorizedRead(ctx, docID)
 }
 
+// UpdateDocumentAuthorizerOption provides the option to pass to DocumentStore.UpdateDocument for proper authorization.
 func UpdateDocumentAuthorizerOption(ctx context.Context, docID influxdb.ID) influxdb.DocumentOptions {
 	return toDocumentOptions(authorizedWrite(ctx, docID))
 }
 
+// DeleteDocumentAuthorizerOption provides the option to pass to DocumentStore.DeleteDocuments for proper authorization.
+// It makes the store delete the specified document.
 func DeleteDocumentAuthorizerOption(ctx context.Context, docID influxdb.ID) influxdb.DocumentFindOptions {
 	return authorizedWrite(ctx, docID)
 }
+
+//// Private functions to build the options above.
 
 func newDocumentPermission(a influxdb.Action, orgID, id influxdb.ID) (*influxdb.Permission, error) {
 	return influxdb.NewPermissionAtID(id, a, influxdb.DocumentsResourceType, orgID)
@@ -63,6 +76,13 @@ func authorizedWhereIDs(ctx context.Context, orgID, docID influxdb.ID, action in
 	}
 }
 
+// TODO(affo): the DocumentService has a weird way of retrieving the users mapped to a document.
+//  It only saves one URM of type OrgMappingType on document creation (see DocumentIndex.AddDocumentOwner),
+//  and later if looks for those orgs that have access to the document and checks if the current user
+//  (in the context) is accessor of the org (with the right read/write permissions depending on the action).
+//  Other services store one URM of UserMappingType for each user in an org to the new resource. Those URMs,
+//  indeed, are used to build up the permissions in a session and can be used to authorize the user.
+//  For more, see refactor_document_service.md.
 func orgIDForDocument(ctx context.Context, idx influxdb.DocumentIndex, d influxdb.ID) (influxdb.ID, error) {
 	oids, err := idx.GetDocumentsAccessors(d)
 	if err != nil {
@@ -127,7 +147,6 @@ func authorizedWithOrgID(ctx context.Context, orgID influxdb.ID, action influxdb
 		if err := IsAllowed(ctx, *p); err != nil {
 			return err
 		}
-		// This is required for retrieving later.
 		return idx.AddDocumentOwner(id, "org", orgID)
 	}
 }

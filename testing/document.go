@@ -201,16 +201,6 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 			}
 		})
 
-		/* Affo: This is not allowed now.
-		t.Run("can create unowned document", func(t *testing.T) {
-			// TODO(desa): should this be allowed?
-			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 2, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d3); err != nil {
-				t.Fatalf("should have been able to create document: %v", err)
-			}
-		})
-		 */
-
 		t.Run("can't create document with unexisted label", func(t *testing.T) {
 			d4 := &influxdb.Document{
 				Meta: influxdb.DocumentMeta{
@@ -246,8 +236,6 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to retrieve documents: %v", err)
 			}
-			// Affo: there is no d3 now.
-			// if exp, got := []*influxdb.Document{d1, d2, d3}, ds; !docsMetaEqual(exp, got) {
 			if exp, got := []*influxdb.Document{d1, d2}, ds; !docsMetaEqual(exp, got) {
 				t.Errorf("documents are different -got/+want\ndiff %s", docsMetaDiff(exp, got))
 			}
